@@ -10,6 +10,12 @@ It runs on a schedule (launchd), pops up an approval dialog, frees only
 regenerable caches and junk, shows how much it freed, and records every removed
 path in an append-only JSON log.
 
+![reclaim in action](assets/demo.svg)
+
+> The tool refuses to clean projects you are working in. In the run above it
+> found 5 such projects - 3 with a live dev server, 1 with uncommitted git
+> changes, 1 edited within the last 24h - and left every one untouched.
+
 ---
 
 ## Why this exists (and why it is not just another cleaner)
@@ -87,6 +93,7 @@ reclaim history clear  archive + reset the log
 reclaim stats          lifetime totals
 reclaim trend          regrowth rate + forecast from the audit log
 reclaim top            live scan of your biggest space users
+reclaim doctor         self-check: install, PATH, schedule, deps
 reclaim status         schedule state, last run, free space
 reclaim ram            top memory hogs + Chrome tab breakdown
 reclaim enable/disable turn the schedule on/off

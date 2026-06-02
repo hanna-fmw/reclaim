@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="690" viewBox="0 0 760 690" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
+  <defs>
+    <style>
+      .t { fill: #c9d1d9; }
+      .dim { fill: #8b949e; }
+      .ok { fill: #3fb950; font-weight: 700; }
+      .prompt { fill: #3fb950; }
+      .cmd { fill: #56d4dd; }
+      .head { fill: #e3b341; }
+      .b { fill: #f0f6fc; font-weight: 700; }
+    </style>
+  </defs>
+
+  <!-- window -->
+  <rect x="0" y="0" width="760" height="690" rx="10" fill="#0d1117"/>
+  <rect x="0" y="0" width="760" height="36" rx="10" fill="#161b22"/>
+  <rect x="0" y="26" width="760" height="10" fill="#161b22"/>
+  <circle cx="20" cy="18" r="6" fill="#ff5f56"/>
+  <circle cx="40" cy="18" r="6" fill="#ffbd2e"/>
+  <circle cx="60" cy="18" r="6" fill="#27c93f"/>
+  <text x="380" y="22" text-anchor="middle" fill="#8b949e" font-size="12">reclaim — zsh</text>
+
+  <g xml:space="preserve">
+    <text x="20" y="66"><tspan class="prompt">$ </tspan><tspan class="cmd">reclaim doctor</tspan></text>
+    <text x="20" y="87"><tspan class="b">reclaim doctor</tspan><tspan class="dim">  - self-check</tspan></text>
+    <text x="20" y="108"><tspan class="ok">  OK</tspan><tspan class="t">   engine present and executable</tspan></text>
+    <text x="20" y="129"><tspan class="ok">  OK</tspan><tspan class="t">   CLI deployed</tspan></text>
+    <text x="20" y="150"><tspan class="ok">  OK</tspan><tspan class="t">   reclaim on PATH (/opt/homebrew/bin/reclaim)</tspan></text>
+    <text x="20" y="171"><tspan class="ok">  OK</tspan><tspan class="t">   python3 available</tspan></text>
+    <text x="20" y="192"><tspan class="ok">  OK</tspan><tspan class="t">   launchd plist installed</tspan></text>
+    <text x="20" y="213"><tspan class="ok">  OK</tspan><tspan class="t">   schedule loaded</tspan></text>
+    <text x="20" y="234"><tspan class="ok">  OK</tspan><tspan class="t">   state dir writable</tspan></text>
+    <text x="20" y="255"><tspan class="ok">  OK</tspan><tspan class="t">   docker daemon reachable</tspan></text>
+    <text x="20" y="276"><tspan class="ok">  OK</tspan><tspan class="t">   disk free 39.0 GB</tspan></text>
+    <text x="20" y="318"><tspan class="b">  10 passed, 0 warning(s), 0 failed</tspan></text>
+
+    <text x="20" y="360"><tspan class="prompt">$ </tspan><tspan class="cmd">reclaim dry</tspan></text>
+    <text x="20" y="381"><tspan class="t">Disk free now: 39.0 GB</tspan></text>
+    <text x="20" y="423"><tspan class="t">Reclaimable (safe to delete):</tspan></text>
+    <text x="20" y="444"><tspan class="dim">- .next caches: 1.8 GB (12 projects)</tspan></text>
+    <text x="20" y="465"><tspan class="dim">- Installer DMGs: 1.6 GB (2 files)</tspan></text>
+    <text x="20" y="486"><tspan class="dim">- Docker: dangling images + build cache</tspan></text>
+    <text x="20" y="528"><tspan class="head">5 project(s) protected (active work, left alone):</tspan></text>
+    <text x="20" y="549"><tspan class="dim">  - 3 with a running dev server</tspan></text>
+    <text x="20" y="570"><tspan class="dim">  - 1 with uncommitted git changes</tspan></text>
+    <text x="20" y="591"><tspan class="dim">  - 1 edited in the last 24h</tspan></text>
+    <text x="20" y="633"><tspan class="t">Clean now?</tspan></text>
+    <text x="20" y="660"><tspan class="prompt">$ </tspan><tspan class="t">▋</tspan></text>
+  </g>
+</svg>
