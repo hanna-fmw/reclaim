@@ -1,0 +1,212 @@
+#!/bin/bash
+# reclaim - tiny CLI front-end for the disk-cleanup tool.
+# Wraps cleanup.sh and adds history / stats / status / ram inspection.
+set -u
+
+STATE_DIR="$HOME/.disk-cleanup"
+SCRIPT="$STATE_DIR/cleanup.sh"
+LOG="$STATE_DIR/history.jsonl"
+LAST_RUN="$STATE_DIR/last-run"
+PLIST="$HOME/Library/LaunchAgents/dev.reclaim.plist"
+LABEL="dev.reclaim"
+
+if [ -t 1 ]; then
+  B=$'\033[1m'; D=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; C=$'\033[36m'; R=$'\033[0m'
+else
+  B=; D=; G=; Y=; C=; R=
+fi
+
+human() { awk -v k="$1" 'BEGIN{ if(k>=1048576)printf "%.1f GB",k/1048576; else if(k>=1024)printf "%.0f MB",k/1024; else printf "%d KB",k }'; }
+
+cmd="${1:-help}"; [ "$#" -gt 0 ] && shift
+
+case "$cmd" in
+  clean)
+    if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then exec "$SCRIPT" --yes; else exec "$SCRIPT" --force; fi
+    ;;
+  scan) exec "$SCRIPT" --scan ;;
+  dry)  exec "$SCRIPT" --dry ;;
+
+  history)
+    if [ "${1:-}" = "clear" ]; then
+      if [ -s "$LOG" ]; then
+        mv "$LOG" "$LOG.$(date +%Y%m%d%H%M%S).bak"; : > "$LOG"
+        echo "${G}History archived and reset.${R}"
+      else
+        echo "No history to clear."
+      fi
+      exit 0
+    fi
+    [ -s "$LOG" ] || { echo "No runs logged yet. Run ${C}reclaim clean${R} first."; exit 0; }
+    printf "${B}%-18s  %-7s  %-9s  %-10s${R}\n" "WHEN" "ACTION" "FREED" "FREE AFTER"
+    python3 - "$LOG" <<'PY'
+import sys, json, datetime
+def h(kb):
+    if kb is None: return "-"
+    kb=float(kb)
+    if kb>=1048576: return f"{kb/1048576:.1f} GB"
+    if kb>=1024: return f"{kb/1024:.0f} MB"
+    return f"{kb:.0f} KB"
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: d=json.loads(line)
+    except Exception: continue
+    ts=d.get("ts","")
+    try: when=datetime.datetime.strptime(ts,"%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M")
+    except Exception: when=ts
+    freed=h(d["freed_kb"]) if "freed_kb" in d else "-"
+    fa=h(d["free_after_kb"]) if "free_after_kb" in d else "-"
+    print(f"{when:18}  {d.get('action',''):7}  {freed:9}  {fa:10}")
+PY
+    ;;
+
+  stats)
+    [ -s "$LOG" ] || { echo "No runs logged yet."; exit 0; }
+    python3 - "$LOG" <<'PY'
+import sys, json
+runs=cleans=0; total=0.0; last=None
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: d=json.loads(line)
+    except Exception: continue
+    runs+=1; last=d.get("ts",last)
+    if d.get("action")=="clean":
+        cleans+=1; total+=float(d.get("freed_kb",0))
+def h(kb):
+    if kb>=1048576: return f"{kb/1048576:.1f} GB"
+    if kb>=1024: return f"{kb/1024:.0f} MB"
+    return f"{kb:.0f} KB"
+print(f"Runs logged:     {runs}")
+print(f"Times cleaned:   {cleans}")
+print(f"Total reclaimed: {h(total)}")
+print(f"Last run:        {last or 'never'}")
+PY
+    ;;
+
+  status)
+    echo "${B}Disk Cleanup - status${R}"
+    if launchctl list 2>/dev/null | grep -q "$LABEL"; then
+      echo "  Schedule:  ${G}enabled${R}  (fires daily 08:45, acts every ~3 days)"
+    else
+      echo "  Schedule:  ${Y}disabled${R}"
+    fi
+    if [ -f "$LAST_RUN" ]; then
+      echo "  Last run:  $(date -r "$(cat "$LAST_RUN")" '+%Y-%m-%d %H:%M')"
+    else
+      echo "  Last run:  never"
+    fi
+    echo "  Disk free: $(human "$(df -k / | awk 'NR==2{print $4}')")"
+    ;;
+
+  enable)
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && echo "${G}Schedule enabled.${R}" || echo "Error enabling."
+    ;;
+  disable)
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null && echo "${Y}Schedule disabled.${R}" || echo "Already disabled."
+    ;;
+
+  ram|mem)
+    total=$(sysctl -n hw.memsize)
+    echo "${B}Memory${R}  -  installed $(awk -v b="$total" 'BEGIN{printf "%.0f GB", b/1073741824}')"
+    free=$(memory_pressure 2>/dev/null | awk -F': ' '/free percentage/{print $2}')
+    [ -n "$free" ] && echo "  free: ${G}${free}${R}"
+    echo ""
+    echo "${B}Top processes by memory${R}"
+    ps -axo rss,comm | awk 'NR>1{a[$2]+=$1} END{for(k in a) printf "%.0f\t%s\n", a[k]/1024, k}' \
+      | sort -rn | head -12 \
+      | awk -F'\t' '{n=$2; sub(/.*\//,"",n); printf "  %7s MB  %s\n", $1, n}'
+    echo ""
+    ct=$(ps -axo rss,command | grep -i 'Google Chrome' | grep -v grep | awk '{s+=$1} END{printf "%.0f", s/1024}')
+    if [ -n "$ct" ] && [ "$ct" -gt 0 ] 2>/dev/null; then
+      tabs=$(osascript -e 'tell application "Google Chrome" to return (count of tabs of windows)' 2>/dev/null)
+      echo "${B}Chrome${R}  -  total ${C}${ct} MB${R} across ${tabs:-?} tabs"
+      echo "  ${D}(exact per-tab memory: Chrome menu > More Tools > Task Manager)${R}"
+      echo "  open tabs:"
+      osascript 2>/dev/null <<'OSA' | sed '/^$/d' | head -15
+tell application "Google Chrome"
+  set out to ""
+  repeat with w in windows
+    repeat with t in tabs of w
+      set out to out & "    - " & (title of t) & linefeed
+    end repeat
+  end repeat
+  return out
+end tell
+OSA
+    fi
+    ;;
+
+  trend)
+    [ -s "$LOG" ] || { echo "No runs logged yet."; exit 0; }
+    python3 - "$LOG" <<'PY'
+import sys, json, datetime
+events=[]
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: d=json.loads(line)
+    except Exception: continue
+    if d.get("action")=="clean" and "freed_kb" in d:
+        try: t=datetime.datetime.strptime(d["ts"],"%Y-%m-%dT%H:%M:%SZ")
+        except Exception: continue
+        events.append((t,float(d["freed_kb"])))
+def h(kb):
+    if kb>=1048576: return f"{kb/1048576:.1f} GB"
+    if kb>=1024: return f"{kb/1024:.0f} MB"
+    return f"{kb:.0f} KB"
+if len(events)<2:
+    print("Not enough data to forecast yet.")
+    print(f"Clean events so far: {len(events)}. Need at least 2 to estimate regrowth.")
+    if events: print(f"Last clean freed {h(events[0][1])}.")
+    sys.exit(0)
+events.sort()
+span_days=max((events[-1][0]-events[0][0]).total_seconds()/86400, 0.01)
+total=sum(k for _,k in events)
+rate=total/span_days  # KB reclaimed per day, a proxy for cache regrowth
+print(f"Clean events:      {len(events)}")
+print(f"Window:            {span_days:.1f} days")
+print(f"Total reclaimed:   {h(total)}")
+print(f"Regrowth rate:     ~{h(rate)}/day  (~{h(rate*7)}/week)")
+print(f"Forecast:          ~{h(rate*3)} reclaimable per 3-day cycle")
+PY
+    ;;
+
+  top)
+    echo "${B}Biggest space users${R} ${D}(live scan, one level deep)${R}"
+    du -sk "$HOME/Documents"/* "$HOME/Library/Caches"/* "$HOME/Library/Containers"/* 2>/dev/null \
+      | sort -rn | head -15 \
+      | awk '{kb=$1; $1=""; sub(/^ /,""); if(kb>=1048576)s=sprintf("%.1f GB",kb/1048576); else s=sprintf("%.0f MB",kb/1024); printf "  %9s  %s\n", s, $0}'
+    ;;
+
+  version|-v|--version) echo "reclaim 1.1" ;;
+
+  help|-h|--help|*)
+    cat <<EOF
+${B}reclaim${R} - a tiny disk + memory janitor for macOS
+
+${B}USAGE${R}   reclaim <command>
+
+  ${C}clean${R}            scan, then pop up the approval dialog
+  ${C}clean -y${R}         clean all safe items immediately, no dialog
+  ${C}scan${R}             notify how much is cleanable (deletes nothing)
+  ${C}dry${R}              print what would be cleaned (no dialog, no delete)
+  ${C}history${R}          table of past runs and space freed
+  ${C}history clear${R}    archive + reset the history log
+  ${C}stats${R}            lifetime totals (runs, total reclaimed)
+  ${C}trend${R}            regrowth rate + forecast from the audit log
+  ${C}top${R}              live scan of your biggest space users
+  ${C}status${R}           schedule state, last run, free space
+  ${C}ram${R}              top memory hogs + Chrome tab breakdown
+  ${C}enable${R} / ${C}disable${R}  turn the every-3-days schedule on / off
+  ${C}help${R}             show this
+
+  Safe by design - it protects active work. A project is never cleaned if a
+  dev server is running, its git tree is dirty, or it was edited in the last
+  24h. Cloud-only files are ignored, Docker volumes are never pruned, and
+  every deleted path is recorded in the audit log.
+EOF
+    ;;
+esac
