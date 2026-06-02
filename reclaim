@@ -181,7 +181,29 @@ PY
       | awk '{kb=$1; $1=""; sub(/^ /,""); if(kb>=1048576)s=sprintf("%.1f GB",kb/1048576); else s=sprintf("%.0f MB",kb/1024); printf "  %9s  %s\n", s, $0}'
     ;;
 
-  version|-v|--version) echo "reclaim 1.1" ;;
+  doctor)
+    pass=0; warn=0; fail=0
+    ok()  { printf "  ${G}OK${R}   %s\n" "$1"; pass=$((pass + 1)); }
+    wn()  { printf "  ${Y}WARN${R} %s\n" "$1"; warn=$((warn + 1)); }
+    bad() { printf "  ${R}FAIL${R} %s\n" "$1"; fail=$((fail + 1)); }
+    echo "${B}reclaim doctor${R}  - self-check"
+    [ -x "$STATE_DIR/cleanup.sh" ] && ok "engine present and executable" || bad "cleanup.sh missing in $STATE_DIR (run install.sh)"
+    [ -x "$STATE_DIR/reclaim" ]    && ok "CLI deployed"                  || bad "reclaim missing in $STATE_DIR (run install.sh)"
+    p=$(command -v reclaim 2>/dev/null || true)
+    [ -n "$p" ] && ok "reclaim on PATH ($p)" || wn "reclaim not on PATH"
+    command -v python3 >/dev/null 2>&1 && ok "python3 available" || bad "python3 not found (history/stats/trend need it)"
+    [ -f "$PLIST" ] && ok "launchd plist installed" || bad "plist missing ($PLIST)"
+    if launchctl list 2>/dev/null | grep -q "$LABEL"; then ok "schedule loaded"; else wn "schedule not loaded - run: reclaim enable"; fi
+    [ -w "$STATE_DIR" ] && ok "state dir writable" || bad "cannot write $STATE_DIR"
+    if [ -f "$LAST_RUN" ]; then ok "last run $(date -r "$(cat "$LAST_RUN")" '+%Y-%m-%d %H:%M')"; else wn "never run yet"; fi
+    if docker info >/dev/null 2>&1; then ok "docker daemon reachable"; else wn "docker not running (docker step skipped)"; fi
+    ok "disk free $(human "$(df -k / | awk 'NR==2{print $4}')")"
+    echo ""
+    printf "  ${B}%d passed, %d warning(s), %d failed${R}\n" "$pass" "$warn" "$fail"
+    [ "$fail" -gt 0 ] && exit 1 || exit 0
+    ;;
+
+  version|-v|--version) echo "reclaim 1.2" ;;
 
   help|-h|--help|*)
     cat <<EOF
@@ -198,6 +220,7 @@ ${B}USAGE${R}   reclaim <command>
   ${C}stats${R}            lifetime totals (runs, total reclaimed)
   ${C}trend${R}            regrowth rate + forecast from the audit log
   ${C}top${R}              live scan of your biggest space users
+  ${C}doctor${R}           self-check: install, PATH, schedule, deps
   ${C}status${R}           schedule state, last run, free space
   ${C}ram${R}              top memory hogs + Chrome tab breakdown
   ${C}enable${R} / ${C}disable${R}  turn the every-3-days schedule on / off
