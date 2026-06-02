@@ -1,0 +1,12 @@
+# runtime state (lives in ~/.disk-cleanup, never in the repo)
+history.jsonl
+last-run
+*.bak
+
+# macOS
+.DS_Store
+
+# personal Claude Code config - never commit
+CLAUDE.md
+.claude/
+CLEAN-SLATE.md
