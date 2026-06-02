@@ -203,7 +203,64 @@ PY
     [ "$fail" -gt 0 ] && exit 1 || exit 0
     ;;
 
-  version|-v|--version) echo "reclaim 1.2" ;;
+  monitor|activity|mon)
+    total_gb=$(sysctl -n hw.memsize | awk '{printf "%.0f",$1/1073741824}')
+    free_ram=$(memory_pressure 2>/dev/null | awk -F': ' '/free percentage/{print $2}')
+    sw=$(sysctl -n vm.swapusage 2>/dev/null)
+    sw_used=$(printf '%s' "$sw" | sed -n 's/.*used = \([0-9.]*\)M.*/\1/p')
+    sw_total=$(printf '%s' "$sw" | sed -n 's/total = \([0-9.]*\)M.*/\1/p')
+
+    echo "${B}reclaim monitor${R} ${D}- a quick text version of Activity Monitor${R}"
+    echo ""
+    echo "${B}Memory${R}   installed ${total_gb} GB   free ${free_ram:-?}"
+    if [ -n "$sw_used" ]; then
+      tag=""
+      [ "$(awk -v u="$sw_used" 'BEGIN{print (u>1024)?1:0}')" = "1" ] && tag="   ${Y}<- high: Mac is using disk as RAM (this causes lag)${R}"
+      printf "${B}Swap${R}     %.0f MB used of %.0f MB%s\n" "$sw_used" "$sw_total" "$tag"
+    fi
+    echo ""
+    echo "${B}Top by CPU${R}"
+    ps -axo %cpu,comm | awk 'NR>1{a[$2]+=$1} END{for(k in a)printf "%.1f\t%s\n",a[k],k}' \
+      | sort -rn | head -6 | awk -F'\t' '{n=$2; sub(/.*\//,"",n); printf "  %5s%%  %s\n",$1,n}'
+    echo ""
+    memagg=$(ps -axo rss,comm | awk 'NR>1{rss=$1;$1="";line=$0;sub(/^ /,"",line);
+      if(match(line,"/[^/]+\\.app/")){nm=substr(line,RSTART,RLENGTH);sub(/^\//,"",nm);sub(/\.app.*/,"",nm);app[nm]=1}
+      else{nm=line;sub(/.*\//,"",nm)} mem[nm]+=rss}
+      END{for(n in mem)printf "%.0f\t%s\t%d\n",mem[n]/1024,n,app[n]}' | sort -rn)
+    echo "${B}Top by memory${R}"
+    printf '%s\n' "$memagg" | head -6 | awk -F'\t' '{printf "  %6s MB  %s\n",$1,$2}'
+    echo ""
+    echo "${B}Heaviest apps you could quit to free memory${R}"
+    printf '%s\n' "$memagg" | awk -F'\t' '$3==1' | head -6 | awk -F'\t' '{printf "  %6s MB  %s\n",$1,$2}'
+
+    if [ "${1:-}" = "--free" ]; then
+      list=""
+      while IFS="$(printf '\t')" read -r mb nm isapp; do
+        [ "$isapp" = "1" ] && [ -n "$nm" ] && list="$list\"$nm ($mb MB)\", "
+      done <<EOF
+$(printf '%s\n' "$memagg" | awk -F'\t' '$3==1' | head -10)
+EOF
+      list="${list%, }"
+      [ -z "$list" ] && { echo "No quittable apps found."; exit 0; }
+      picked=$(osascript 2>/dev/null \
+        -e "set theList to {$list}" \
+        -e 'set chosen to choose from list theList with prompt "Quit which apps to free memory? They close normally and may ask to save." with multiple selections allowed' \
+        -e 'if chosen is false then return "CANCEL"' \
+        -e 'set text item delimiters of AppleScript to "||"' \
+        -e 'return chosen as string')
+      if [ "$picked" != "CANCEL" ] && [ -n "$picked" ]; then
+        printf '%s\n' "$picked" | awk -F'\\|\\|' '{for(i=1;i<=NF;i++)print $i}' | while read -r item; do
+          app=${item% (*}
+          [ -n "$app" ] && osascript -e "tell application \"$app\" to quit" 2>/dev/null && echo "  quitting $app"
+        done
+      fi
+    else
+      echo ""
+      echo "  ${D}to quit some of these: reclaim monitor --free${R}"
+    fi
+    ;;
+
+  version|-v|--version) echo "reclaim 1.3" ;;
 
   help|-h|--help|*)
     cat <<EOF
@@ -223,6 +280,8 @@ ${B}USAGE${R}   reclaim <command>
   ${C}doctor${R}           self-check: install, PATH, schedule, deps
   ${C}status${R}           schedule state, last run, free space
   ${C}ram${R}              top memory hogs + Chrome tab breakdown
+  ${C}monitor${R}          quick text Activity Monitor: CPU, memory, swap
+  ${C}monitor --free${R}   pick heavy apps to quit and free memory
   ${C}enable${R} / ${C}disable${R}  turn the every-3-days schedule on / off
   ${C}help${R}             show this
 

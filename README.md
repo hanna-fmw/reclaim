@@ -98,6 +98,8 @@ reclaim top            live scan of your biggest space users
 reclaim doctor         self-check: install, PATH, schedule, deps
 reclaim status         schedule state, last run, free space
 reclaim ram            top memory hogs + Chrome tab breakdown
+reclaim monitor        text Activity Monitor: CPU, memory, swap (with lag warning)
+reclaim monitor --free pick heavy apps to quit and free memory
 reclaim enable/disable turn the schedule on/off
 reclaim help           this
 ```
