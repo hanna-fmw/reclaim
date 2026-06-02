@@ -10,11 +10,7 @@ It runs on a schedule (launchd), pops up an approval dialog, frees only
 regenerable caches and junk, shows how much it freed, and records every removed
 path in an append-only JSON log.
 
-![reclaim in action](assets/demo.svg)
-
-> The tool refuses to clean projects you are working in. In the run above it
-> found 5 such projects - 3 with a live dev server, 1 with uncommitted git
-> changes, 1 edited within the last 24h - and left every one untouched.
+![reclaim CLI demo](assets/demo.gif)
 
 ---
 
@@ -40,6 +36,12 @@ all three:
    cache there frees ~0 bytes until the Trash is emptied, and `.next` caches are
    regenerable so recovery has near-zero value. Trash-recovery would make it
    slower, more complex, and worse at its one job.
+
+![what it protects](assets/demo.svg)
+
+> Active-work awareness in a single run: it found 5 projects in use - 3 with a
+> live dev server, 1 with uncommitted git changes, 1 edited within the last 24h
+> - and left every one of them untouched.
 
 ---
 
