@@ -16,10 +16,11 @@
 #   - Space freed is measured from real df before/after, then logged + notified.
 #
 # Flags:
-#   (none)    auto mode - used by the scheduler; obeys the 3-day gate, shows dialog
-#   --force   skip the 3-day gate, show dialog now
-#   --scan    just notify how much is cleanable, delete nothing
-#   --dry     print the plan to stdout, delete nothing, no dialog
+#   (none)      auto mode - used by the scheduler; obeys the 3-day gate, shows dialog
+#   --force     skip the 3-day gate, show dialog now
+#   --yes / -y  skip the 3-day gate AND the dialog, clean all safe items
+#   --scan      just notify how much is cleanable, delete nothing
+#   --dry       print the plan to stdout, delete nothing, no dialog
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
 set -u

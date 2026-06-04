@@ -66,7 +66,8 @@ Space freed is always measured from real `df` before/after, never estimated.
 ## Install
 
 ```sh
-cd ./reclaim
+git clone https://github.com/hanna-fmw/reclaim.git
+cd reclaim
 ./install.sh
 ```
 
@@ -77,8 +78,8 @@ your PATH, and loads the launchd schedule. To remove everything:
 ./uninstall.sh
 ```
 
-The project folder is the **source of truth**. Edit here, then re-run
-`./install.sh` to deploy. Runtime state (`history.jsonl`, `last-run`) lives in
+The cloned folder is the **source of truth**. Edit here, then re-run
+`./install.sh` to redeploy. Runtime state (`history.jsonl`, `last-run`) lives in
 `~/.disk-cleanup/` and is not part of the repo.
 
 ---
