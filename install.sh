@@ -24,9 +24,10 @@ else
   echo "Linked: ~/.local/bin/reclaim (ensure ~/.local/bin is on your PATH)"
 fi
 
-# Load the launchd schedule.
+# Load the launchd schedule (substitute __HOME__ placeholders at install time so
+# the plist works for whichever user is installing).
 mkdir -p "$HOME/Library/LaunchAgents"
-cp "$SRC/$PLIST_NAME" "$PLIST"
+sed -e "s|__HOME__|$HOME|g" "$SRC/$PLIST_NAME" > "$PLIST"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 

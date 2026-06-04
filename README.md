@@ -117,7 +117,7 @@ three buttons:
 
 ## Schedule
 
-The launchd agent (`dev.reclaim.plist`) fires daily at **08:45**. The
+The launchd agent (`dev.reclaim.plist`, label `dev.reclaim`) fires daily at **08:45**. The
 script holds a **3-day gate** (`INTERVAL_DAYS=3`), so it only actually acts
 every ~3 days. If the Mac is asleep at 08:45, macOS runs it on next wake.
 Running `reclaim` manually always bypasses the gate.
