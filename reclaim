@@ -260,7 +260,35 @@ EOF
     fi
     ;;
 
-  version|-v|--version) echo "reclaim 1.3" ;;
+  checks|list)
+    cat <<EOF
+${B}reclaim - what it will look at${R}  ${D}(6 categories, each opt-in in the dialog)${R}
+
+  ${C}1. .next caches${R}             Next.js build caches in ~/Documents projects
+     ${D}risk: none    rebuild on next \`pnpm dev\` / \`next build\`${R}
+
+  ${C}2. Installer DMGs${R}           Old Screaming Frog auto-update installers
+     ${D}risk: none    app already installed, DMGs are leftover${R}
+
+  ${C}3. Docker unused images${R}    Full prune (not just dangling) + build cache
+     ${D}risk: low     next \`docker compose up\` re-pulls. Volumes NEVER pruned.${R}
+
+  ${C}4. npm cache${R}               ~/.npm/_cacache
+     ${D}risk: none    rebuilds on next \`npm install\` (first one slightly slower)${R}
+
+  ${C}5. Claude vm_bundles${R}       ~/Library/Application Support/Claude/vm_bundles
+     ${D}risk: low     sandbox VMs; redownloaded on demand. Skipped if Claude.app is running.${R}
+
+  ${C}6. Dormant node_modules${R}    node_modules in projects idle 30+ days
+     ${D}risk: low     opens per-project picker. \`pnpm install\` to rebuild.${R}
+
+${B}Active-work protection${R} always applies to .next and dormant node_modules:
+  a project is skipped if a dev server is running for it, its git tree is
+  dirty, or any file was edited within the last 24h.
+EOF
+    ;;
+
+  version|-v|--version) echo "reclaim 1.4" ;;
 
   help|-h|--help|*)
     cat <<EOF
@@ -268,8 +296,11 @@ ${B}reclaim${R} - a tiny disk + memory janitor for macOS
 
 ${B}USAGE${R}   reclaim <command>
 
-  ${C}clean${R}            scan, then pop up the approval dialog
-  ${C}clean -y${R}         clean all safe items immediately, no dialog
+  ${C}clean${R}            scan, then pop up the per-category approval dialog
+                   (Cancel / Ask Claude / Continue -> tick what to clean)
+  ${C}clean -y${R}         headless: clean the low-risk set, no dialog
+                   (.next, DMGs, Docker, npm cache, Claude vm_bundles)
+                   dormant node_modules requires the interactive picker
   ${C}scan${R}             notify how much is cleanable (deletes nothing)
   ${C}dry${R}              print what would be cleaned (no dialog, no delete)
   ${C}history${R}          table of past runs and space freed
@@ -277,6 +308,7 @@ ${B}USAGE${R}   reclaim <command>
   ${C}stats${R}            lifetime totals (runs, total reclaimed)
   ${C}trend${R}            regrowth rate + forecast from the audit log
   ${C}top${R}              live scan of your biggest space users
+  ${C}checks${R}           list the 6 cleanup categories + risk notes
   ${C}doctor${R}           self-check: install, PATH, schedule, deps
   ${C}status${R}           schedule state, last run, free space
   ${C}ram${R}              top memory hogs + Chrome tab breakdown
@@ -289,6 +321,17 @@ ${B}USAGE${R}   reclaim <command>
   dev server is running, its git tree is dirty, or it was edited in the last
   24h. Cloud-only files are ignored, Docker volumes are never pruned, and
   every deleted path is recorded in the audit log.
+
+  Categories the dialog will offer (each one is opt-in via tickbox):
+    1. .next caches          rebuilds on next dev
+    2. Installer DMGs        old auto-update installers
+    3. Docker unused images  full prune, volumes untouched
+    4. npm cache             ~/.npm/_cacache, rebuilds
+    5. Claude vm_bundles     skipped if Claude.app is running
+    6. Dormant node_modules  per-project picker, 30d+ idle only
+
+  The dialog has an "Ask Claude" button that opens a Terminal in this
+  repo and starts an interactive claude session with the plan shown.
 EOF
     ;;
 esac
