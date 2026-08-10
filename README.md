@@ -215,13 +215,20 @@ left alone because their dev server was still running - the log records what was
 *not* cleaned and why, not just what was.
 
 **Measured, not estimated.** Docker is the awkward case: its own `Reclaimable`
-column counts an image as reclaimable even while a stopped container still
-references it, and `prune -af` will not remove those - so the headline figure is
-an upper bound. Rather than log the estimate as if it were fact, reclaim
-measures Docker's real total size either side of the prune and records the
-delta, keeping the estimate alongside it as `estimated_kb`. The dialog says the
-same thing up front: how many images are held by existing containers and will
-stay.
+column counts an image as reclaimable even while a container still references
+it, and `prune -af` will not remove those. Reported naively it promises many GB
+and then frees nothing, which is the worst possible behaviour for a tool asking
+you to approve deletions.
+
+So the headline number is what a prune can actually remove right now - build
+cache plus unreferenced images - with the optimistic figure kept as a clearly
+labelled ceiling: `0 KB … 14 image(s) are in use by containers and stay; up to
+11.5 GB if you stop them first`. The log then records Docker's measured
+before/after delta rather than either estimate, keeping the prediction alongside
+as `estimated_kb` so the two can be compared after the fact.
+
+If you pick Docker while the daemon is down, it says so and offers to start
+Docker Desktop rather than silently doing nothing.
 
 This is the "git for data" flat-file approach: append-only, greppable, and
 git-trackable if you choose to version it.

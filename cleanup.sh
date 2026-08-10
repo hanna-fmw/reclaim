@@ -217,12 +217,19 @@ if docker info >/dev/null 2>&1; then
   # Docker's Reclaimable column is an UPPER BOUND: it counts an image as
   # reclaimable even when a stopped container still references it, and
   # `prune -af` will not remove those. Report it, but say so.
-  docker_kb=$(docker system df --format '{{.Type}}\t{{.Reclaimable}}' 2>/dev/null | docker_size_to_kb 2)
+  docker_upper_kb=$(docker system df --format '{{.Type}}\t{{.Reclaimable}}' 2>/dev/null | docker_size_to_kb 2)
   docker_held=$(docker system df --format '{{.Type}}\t{{.Active}}' 2>/dev/null \
     | awk -F'\t' 'NR==1{print ($2+0)}')
-  docker_note="up to $(human "${docker_kb:-0}") images + build cache (volumes left alone)"
+  # What `prune -af` can ACTUALLY remove right now: build cache plus images no
+  # container references. Anything a container holds - running or stopped - stays.
+  docker_build_kb=$(docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null \
+    | awk -F'\t' '$1 ~ /Build Cache/' | docker_size_to_kb 2)
+  docker_dangling_kb=$(docker image ls --filter dangling=true --format '{{.Size}}' 2>/dev/null \
+    | awk '{print "x\t" $0}' | docker_size_to_kb 2)
+  docker_kb=$(( ${docker_build_kb:-0} + ${docker_dangling_kb:-0} ))
+  docker_note="$(human "$docker_kb") (build cache + unreferenced images; volumes left alone)"
   if [ "${docker_held:-0}" -gt 0 ]; then
-    docker_note="$docker_note; $docker_held image(s) held by existing containers will stay"
+    docker_note="$docker_note - $docker_held image(s) are in use by containers and stay; up to $(human "${docker_upper_kb:-0}") if you stop them first"
   fi
 fi
 
@@ -533,7 +540,34 @@ Continue opens a picker - nothing is deleted until you select and confirm there.
 
   case "$picked" in *".next caches"*)         do_next=1 ;; esac
   case "$picked" in *"Installer DMGs"*)       do_dmg=1 ;; esac
-  case "$picked" in *"Docker unused images"*) do_docker=1 ;; esac
+  case "$picked" in *"Docker unused images"*)
+    if docker info >/dev/null 2>&1; then
+      do_docker=1
+    else
+      # Picked it, but the daemon is down - say so instead of silently skipping.
+      dchoice=$(osascript -e 'display dialog "You picked Docker, but Docker Desktop is not running - reclaim cannot prune anything while the daemon is down.
+
+Start it now and prune?" buttons {"Skip Docker", "Start Docker & prune"} default button "Start Docker & prune" with title "Disk Cleanup" with icon caution giving up after 120' 2>/dev/null)
+      case "$dchoice" in
+        *"Start Docker & prune"*)
+          open -a Docker 2>/dev/null
+          for _ in $(seq 1 60); do
+            docker info >/dev/null 2>&1 && break
+            sleep 2
+          done
+          if docker info >/dev/null 2>&1; then
+            do_docker=1
+          else
+            osascript -e 'display notification "Docker did not come up in time - skipped." with title "Disk Cleanup"' 2>/dev/null
+          fi
+          ;;
+        *)
+          osascript -e 'display notification "Docker skipped - daemon not running." with title "Disk Cleanup"' 2>/dev/null
+          ;;
+      esac
+    fi
+    ;;
+  esac
   case "$picked" in *"npm cache"*)            do_npm=1 ;; esac
   case "$picked" in *"Claude vm_bundles"*)
     if [ "$claude_running" = "1" ]; then
