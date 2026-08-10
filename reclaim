@@ -176,7 +176,8 @@ PY
 
   top)
     echo "${B}Biggest space users${R} ${D}(live scan, one level deep)${R}"
-    du -sk "$HOME/Documents"/* "$HOME/Library/Caches"/* "$HOME/Library/Containers"/* 2>/dev/null \
+    du -sk "$HOME/Documents"/* "$HOME/Library/Caches"/* "$HOME/Library/Containers"/* \
+           "$HOME/Library/Application Support"/* "$HOME/Library/pnpm" 2>/dev/null \
       | sort -rn | head -15 \
       | awk '{kb=$1; $1=""; sub(/^ /,""); if(kb>=1048576)s=sprintf("%.1f GB",kb/1048576); else s=sprintf("%.0f MB",kb/1024); printf "  %9s  %s\n", s, $0}'
     ;;
@@ -262,7 +263,7 @@ EOF
 
   checks|list)
     cat <<EOF
-${B}reclaim - what it will look at${R}  ${D}(6 categories, each opt-in in the dialog)${R}
+${B}reclaim - what it will look at${R}  ${D}(10 categories, each opt-in in the dialog)${R}
 
   ${C}1. .next caches${R}             Next.js build caches in ~/Documents projects
      ${D}risk: none    rebuild on next \`pnpm dev\` / \`next build\`${R}
@@ -282,13 +283,38 @@ ${B}reclaim - what it will look at${R}  ${D}(6 categories, each opt-in in the di
   ${C}6. Dormant node_modules${R}    node_modules in projects idle 30+ days
      ${D}risk: low     opens per-project picker. \`pnpm install\` to rebuild.${R}
 
+  ${C}7. Turbopack cache bloat${R}   .next/dev/cache/turbopack on ACTIVE projects, over 2 GB
+     ${D}risk: none    Next 16's persistent cache grows on every rebuild and is
+                   never compacted away - a dev server left running for weeks
+                   can reach many GB. Costs one slow rebuild. Never deleted
+                   while that project's dev server is running.${R}
+
+  ${C}8. Chrome cache${R}            ~/Library/Caches/Google
+     ${D}risk: none    cache only - cookies, logins and passwords live in
+                   Application Support/Google and are NEVER touched, so you
+                   stay signed in. Skipped unless Chrome is quit.${R}
+
+  ${C}9. pnpm store${R}              ~/Library/pnpm/store (via \`pnpm store prune\`)
+     ${D}risk: none    existing node_modules are hardlinks and keep working;
+                   only the next install re-downloads instead of linking.${R}
+
+ ${C}10. Stray recordings${R}        big (200 MB+), old (30d+) media in Desktop /
+                   Downloads / Documents
+     ${D}YOUR CALL     these are your own files, not caches. Never ticked by
+                   default; opens a per-file picker.${R}
+
+${B}Also reported, never deleted${R}
+  how much a reboot would free (temp/cache in /private/var/folders + local
+  APFS snapshots), and - if Docker Desktop is not running - an offer to start
+  it and rescan, since its images are usually the single biggest item.
+
 ${B}Active-work protection${R} always applies to .next and dormant node_modules:
   a project is skipped if a dev server is running for it, its git tree is
   dirty, or any file was edited within the last 24h.
 EOF
     ;;
 
-  version|-v|--version) echo "reclaim 1.4" ;;
+  version|-v|--version) echo "reclaim 1.5" ;;
 
   help|-h|--help|*)
     cat <<EOF
@@ -308,7 +334,7 @@ ${B}USAGE${R}   reclaim <command>
   ${C}stats${R}            lifetime totals (runs, total reclaimed)
   ${C}trend${R}            regrowth rate + forecast from the audit log
   ${C}top${R}              live scan of your biggest space users
-  ${C}checks${R}           list the 6 cleanup categories + risk notes
+  ${C}checks${R}           list the 10 cleanup categories + risk notes
   ${C}doctor${R}           self-check: install, PATH, schedule, deps
   ${C}status${R}           schedule state, last run, free space
   ${C}ram${R}              top memory hogs + Chrome tab breakdown
@@ -329,6 +355,14 @@ ${B}USAGE${R}   reclaim <command>
     4. npm cache             ~/.npm/_cacache, rebuilds
     5. Claude vm_bundles     skipped if Claude.app is running
     6. Dormant node_modules  per-project picker, 30d+ idle only
+    7. Turbopack cache bloat 2 GB+ .next/dev caches on active projects
+    8. Chrome cache          cache only, never your logins; quit Chrome first
+    9. pnpm store            prune only, node_modules keep working
+   10. Stray recordings      your own big/old media, never ticked by default
+
+  Every line in the dialog says why it is safe (or why it is skipped), and the
+  plan reports how much a reboot would free. If Docker Desktop is not running,
+  reclaim offers to start it and rescan.
 
   The dialog has an "Ask Claude" button that opens a Terminal in this
   repo and starts an interactive claude session with the plan shown.

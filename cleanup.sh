@@ -9,6 +9,24 @@
 #   5. Claude vm_bundles        - sandbox VM bundles, redownloaded on demand
 #   6. Dormant node_modules     - per-project picker, only projects untouched
 #                                 for DORMANT_DAYS and not active work
+#   7. Ballooned Turbopack cache- .next/dev/cache/turbopack on ACTIVE projects.
+#                                 Next 16 keeps a persistent LSM cache that grows
+#                                 with every rebuild and is never auto-compacted
+#                                 away, so a long-running dev server can reach
+#                                 many GB. Only offered above TURBO_MIN_KB, and
+#                                 never deleted while that project's dev server
+#                                 is running (the store is open).
+#   8. Browser cache             - ~/Library/Caches/Google only. Cookies, logins
+#                                 and passwords live in Application Support and
+#                                 are NEVER touched. Requires Chrome to be quit.
+#   9. pnpm store                - ~/Library/pnpm/store. Existing node_modules
+#                                 are hardlinks and keep working; only the next
+#                                 install re-downloads.
+#  10. Stray recordings          - big, old media files sitting in Desktop /
+#                                 Downloads / Documents. Report + per-file
+#                                 picker, never ticked by default.
+#
+# Also reported (never auto-deleted): how much a reboot would likely free.
 #
 # ACTIVE-WORK AWARENESS still applies to .next and dormant node_modules:
 #   a project is protected if a dev server is running for it, its git tree
@@ -37,9 +55,18 @@ DOCS="$HOME/Documents"
 DMG_DIR="$HOME/.ScreamingFrogSEOSpider/AppUpdater"
 NPM_CACHE="$HOME/.npm/_cacache"
 CLAUDE_VM="$HOME/Library/Application Support/Claude/vm_bundles"
+CHROME_CACHE="$HOME/Library/Caches/Google"
+CHROME_PROFILES="$HOME/Library/Application Support/Google/Chrome"
+PNPM_STORE="$HOME/Library/pnpm/store"
 INTERVAL_DAYS=3
 PROTECT_HOURS=24
 DORMANT_DAYS=30
+# A Turbopack dev cache only counts as "ballooned" above this size.
+TURBO_MIN_KB=${TURBO_MIN_KB:-$((2 * 1024 * 1024))}   # 2 GB
+# Stray recordings: only files at least this big and this old are listed.
+MEDIA_MIN_KB=${MEDIA_MIN_KB:-$((200 * 1024))}        # 200 MB
+MEDIA_AGE_DAYS=${MEDIA_AGE_DAYS:-30}
+MEDIA_DIRS="$HOME/Desktop $HOME/Downloads $HOME/Documents"
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$STATE_DIR"
 
@@ -75,7 +102,9 @@ RUNNING_TMP="$STATE_DIR/.running.$$"
 NEXT_TMP="$STATE_DIR/.next.$$"
 DORM_TMP="$STATE_DIR/.dormant.$$"
 PLAN_TMP="$STATE_DIR/.plan.$$"
-cleanup_temps() { rm -f "$RUNNING_TMP" "$NEXT_TMP" "$DORM_TMP" "$PLAN_TMP"; }
+TURBO_TMP="$STATE_DIR/.turbo.$$"
+MEDIA_TMP="$STATE_DIR/.media.$$"
+cleanup_temps() { rm -f "$RUNNING_TMP" "$NEXT_TMP" "$DORM_TMP" "$PLAN_TMP" "$TURBO_TMP" "$MEDIA_TMP"; }
 trap cleanup_temps EXIT
 
 # --- detect project dirs with a live dev server ---
@@ -104,10 +133,23 @@ protected_reason() { # $1 = project dir
   fi
 }
 
-# --- collect safe .next caches ---
-: > "$NEXT_TMP"
+# Size of the persistent Turbopack dev cache inside a .next dir, in KB.
+# Next 16 puts it at .next/dev/cache/turbopack; older layouts use .next/cache.
+turbo_kb_of() { # $1 = .next dir
+  local n="$1" t=0 p sz
+  for p in "$n/dev/cache/turbopack" "$n/cache/turbopack"; do
+    [ -d "$p" ] || continue
+    sz=$(du -sk "$p" 2>/dev/null | awk '{print $1}')
+    t=$((t + ${sz:-0}))
+  done
+  echo "$t"
+}
+
+# --- collect safe .next caches (and ballooned Turbopack caches on active ones) ---
+: > "$NEXT_TMP"; : > "$TURBO_TMP"
 next_kb=0; next_count=0; skipped=0
 prot_running=0; prot_dirty=0; prot_recent=0
+turbo_kb=0; turbo_count=0; turbo_blocked=0; turbo_blocked_kb=0
 while IFS= read -r d; do
   [ -z "$d" ] && continue
   reason=$(protected_reason "$(dirname "$d")")
@@ -118,6 +160,18 @@ while IFS= read -r d; do
       dirty-git)   prot_dirty=$((prot_dirty + 1)) ;;
       recent-edit) prot_recent=$((prot_recent + 1)) ;;
     esac
+    # The project is active, so the whole .next stays - but its Turbopack cache
+    # may still have ballooned. Offer that separately when it is big enough.
+    tkb=$(turbo_kb_of "$d")
+    if [ "${tkb:-0}" -ge "$TURBO_MIN_KB" ]; then
+      printf '%s\t%s\t%s\n' "$tkb" "$reason" "$d" >> "$TURBO_TMP"
+      if [ "$reason" = "running" ]; then
+        # Never delete an open LSM store out from under a live dev server.
+        turbo_blocked=$((turbo_blocked + 1)); turbo_blocked_kb=$((turbo_blocked_kb + tkb))
+      else
+        turbo_kb=$((turbo_kb + tkb)); turbo_count=$((turbo_count + 1))
+      fi
+    fi
     continue
   fi
   echo "$d" >> "$NEXT_TMP"
@@ -137,21 +191,39 @@ if [ -d "$DMG_DIR" ]; then
   done
 fi
 
+# Turn a `docker system df` size string ("1.23GB", "455.1MB") into KB.
+docker_size_to_kb() {
+  awk -F'\t' -v col="$1" 'BEGIN{t=0}
+      { v=$col; sub(/ \(.*/,"",v); n=v+0;
+        if (v ~ /GB/) n=n*1048576;
+        else if (v ~ /MB/) n=n*1024;
+        else if (v ~ /kB/ || v ~ /KB/) n=n;
+        else if (v ~ /B/) n=n/1024;
+        t+=n }
+      END{ printf "%.0f", t }'
+}
+
+# Real total size Docker is holding right now, so a prune can be measured rather
+# than estimated.
+docker_total_kb() {
+  docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null | docker_size_to_kb 2
+}
+
 # --- Docker: estimate size of unused (reclaimable) images + build cache ---
 docker_note="not running"
 docker_kb=0
+docker_held=0
 if docker info >/dev/null 2>&1; then
-  # parse `docker system df` reclaimable column; falls back to 0 if Docker is shy
-  docker_kb=$(docker system df --format '{{.Type}}\t{{.Reclaimable}}' 2>/dev/null \
-    | awk -F'\t' 'BEGIN{t=0}
-        { v=$2; sub(/ \(.*/,"",v); n=v+0;
-          if (v ~ /GB/) n=n*1048576;
-          else if (v ~ /MB/) n=n*1024;
-          else if (v ~ /kB/ || v ~ /KB/) n=n;
-          else if (v ~ /B/) n=n/1024;
-          t+=n }
-        END{ printf "%.0f", t }')
-  docker_note="$(human "${docker_kb:-0}") unused images + build cache (volumes left alone)"
+  # Docker's Reclaimable column is an UPPER BOUND: it counts an image as
+  # reclaimable even when a stopped container still references it, and
+  # `prune -af` will not remove those. Report it, but say so.
+  docker_kb=$(docker system df --format '{{.Type}}\t{{.Reclaimable}}' 2>/dev/null | docker_size_to_kb 2)
+  docker_held=$(docker system df --format '{{.Type}}\t{{.Active}}' 2>/dev/null \
+    | awk -F'\t' 'NR==1{print ($2+0)}')
+  docker_note="up to $(human "${docker_kb:-0}") images + build cache (volumes left alone)"
+  if [ "${docker_held:-0}" -gt 0 ]; then
+    docker_note="$docker_note; $docker_held image(s) held by existing containers will stay"
+  fi
 fi
 
 # --- npm cache size ---
@@ -187,8 +259,45 @@ EOF
 if [ -s "$DORM_TMP" ]; then
   sort -rn "$DORM_TMP" -o "$DORM_TMP"
 fi
+[ -s "$TURBO_TMP" ] && sort -rn "$TURBO_TMP" -o "$TURBO_TMP"
 
-est_kb=$((next_kb + dmg_kb + docker_kb + npm_kb + claude_kb + dorm_kb))
+# --- Chrome cache (safe) vs Chrome profiles (destructive - never touched) ---
+chrome_kb=0; chrome_running=0; chrome_profile_kb=0
+[ -d "$CHROME_CACHE" ] && chrome_kb=$(du -sk "$CHROME_CACHE" 2>/dev/null | awk '{print $1}')
+[ -d "$CHROME_PROFILES" ] && chrome_profile_kb=$(du -sk "$CHROME_PROFILES" 2>/dev/null | awk '{print $1}')
+pgrep -x "Google Chrome" >/dev/null 2>&1 && chrome_running=1
+
+# --- pnpm store ---
+pnpm_kb=0
+[ -d "$PNPM_STORE" ] && pnpm_kb=$(du -sk "$PNPM_STORE" 2>/dev/null | awk '{print $1}')
+
+# --- stray recordings: big, old media sitting in Desktop / Downloads / Documents ---
+: > "$MEDIA_TMP"
+media_kb=0; media_count=0
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  sz=$(du -sk "$f" 2>/dev/null | awk '{print $1}')
+  # 0 KB means a cloud-only placeholder - leave those alone.
+  [ -z "$sz" ] || [ "$sz" -lt "$MEDIA_MIN_KB" ] && continue
+  printf '%s\t%s\n' "$sz" "$f" >> "$MEDIA_TMP"
+  media_kb=$((media_kb + sz)); media_count=$((media_count + 1))
+done <<EOF
+$(find $MEDIA_DIRS -maxdepth 3 -type f \
+    \( -iname '*.mov' -o -iname '*.mp4' -o -iname '*.m4a' -o -iname '*.mp3' \
+       -o -iname '*.wav' -o -iname '*.mkv' -o -iname '*.m4v' \) \
+    -mtime "+$MEDIA_AGE_DAYS" 2>/dev/null)
+EOF
+[ -s "$MEDIA_TMP" ] && sort -rn "$MEDIA_TMP" -o "$MEDIA_TMP"
+
+# --- what a reboot would likely free (reported only, never deleted here) ---
+# /private/var/folders is the per-user temp + cache area macOS rebuilds on boot;
+# local APFS snapshots are freed by the OS when it needs the space.
+reboot_kb=$(du -sk /private/var/folders 2>/dev/null | awk '{print $1}')
+reboot_kb=${reboot_kb:-0}
+snap_count=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c 'com.apple' || true)
+snap_count=${snap_count:-0}
+
+est_kb=$((next_kb + dmg_kb + docker_kb + npm_kb + claude_kb + dorm_kb + turbo_kb + chrome_kb + pnpm_kb))
 free_now=$(df -k / | awk 'NR==2{print $4}')
 
 # --- build the human-readable plan (also written to a file for Ask Claude) ---
@@ -220,6 +329,27 @@ Categories:
      Risk: low. Reinstall with \`pnpm install\` / \`npm install\` if you come back
      to the project. Only projects with no edits for ${DORMANT_DAYS}+ days and no
      active dev server / dirty git are listed.
+
+  7. Ballooned Turbopack cache $(human "$turbo_kb")  ($turbo_count project(s) over $(human "$TURBO_MIN_KB"))
+     Risk: none. Next 16 keeps a persistent Turbopack cache under .next/dev that
+     grows with every rebuild and is never compacted away, so a dev server left
+     running for weeks can reach many GB. Deleting it costs one slow rebuild.$([ "$turbo_blocked" -gt 0 ] && printf '\n     BLOCKED: %s more (%s) have a dev server running - stop it to reclaim those.' "$turbo_blocked" "$(human "$turbo_blocked_kb")")
+
+  8. Chrome cache             $(human "$chrome_kb")$([ "$chrome_running" = "1" ] && echo "  (Chrome running -> SKIPPED)")
+     Risk: none, but Chrome must be quit first. This is ~/Library/Caches/Google
+     only. Cookies, logins and passwords live in Application Support/Google
+     ($(human "$chrome_profile_kb")) and are NEVER touched - you stay signed in.
+
+  9. pnpm store               $(human "$pnpm_kb")
+     Risk: none. Existing node_modules are hardlinks and keep working; only the
+     next \`pnpm install\` re-downloads instead of linking.
+
+ 10. Stray recordings         $(human "$media_kb")  ($media_count files, ${MEDIA_AGE_DAYS}d+ old, over $(human "$MEDIA_MIN_KB"))
+     Risk: YOUR CALL - these are your own files, not caches. Never ticked by
+     default; opens a per-file picker. Not counted in the total above.
+
+  Reboot would likely free  up to $(human "$reboot_kb") of temp/cache in /private/var/folders$([ "$snap_count" -gt 0 ] && printf ', plus %s local APFS snapshot(s) the OS frees on demand' "$snap_count")
+     Nothing here is deleted by reclaim - just restart the Mac.
 PLAN
   if [ "$skipped" -gt 0 ]; then
     echo ""
@@ -245,6 +375,10 @@ if [ "$MODE" = "dry" ]; then
   cat "$NEXT_TMP" 2>/dev/null
   echo "--- dormant node_modules (size  path): ---"
   awk -F'\t' '{printf "  %s  %s\n", $1, $2}' "$DORM_TMP" 2>/dev/null
+  echo "--- ballooned Turbopack caches (size  blocker  path): ---"
+  awk -F'\t' '{printf "  %s  %-11s  %s\n", $1, $2, $3}' "$TURBO_TMP" 2>/dev/null
+  echo "--- stray recordings (size  path): ---"
+  awk -F'\t' '{printf "  %s  %s\n", $1, $2}' "$MEDIA_TMP" 2>/dev/null
   exit 0
 fi
 
@@ -265,21 +399,68 @@ echo "$now" > "$LAST_RUN"
 
 # --- decide what to clean ---
 do_next=0; do_dmg=0; do_docker=0; do_npm=0; do_claudevm=0; do_dorm=0
-dorm_selected_file=""
+do_turbo=0; do_chrome=0; do_pnpm=0; do_media=0
+dorm_selected_file=""; media_selected_file=""
 action="skip"
 
 if [ "$MODE" = "yes" ]; then
-  # Headless safe set. Skip dormant node_modules (needs per-project approval).
-  # Skip Claude vm_bundles if Claude.app is running.
-  do_next=1; do_dmg=1; do_docker=1; do_npm=1
+  # Headless safe set. Skip dormant node_modules (needs per-project approval),
+  # Turbopack caches (active projects - deserve a look), Chrome cache (needs
+  # Chrome quit) and recordings (personal files). Claude vm_bundles only if
+  # Claude.app is not running.
+  do_next=1; do_dmg=1; do_docker=1; do_npm=1; do_pnpm=1
   [ "$claude_running" = "0" ] && do_claudevm=1
   action="clean"
 else
   # Interactive: main dialog (Cancel / Ask Claude / Continue) -> picker.
-  # Pad with a wide invisible spacer line so the dialog renders wider.
-  # AppleScript display dialog has no width param; width = widest line.
-  spacer=$(printf '%*s' 160 '')
-  plan_for_dialog=$(printf '%s\n%s' "$spacer" "$(cat "$PLAN_TMP")" | sed 's/"/\\"/g')
+  # Compact summary only - full details live in the picker and last-plan.txt.
+  # Docker holds its whole VM in one big file, so an unreachable daemon means we
+  # cannot see (or reclaim) any of it. Offer to start it and rescan, once.
+  if ! docker info >/dev/null 2>&1 && [ "${RECLAIM_DOCKER_TRIED:-0}" = "0" ]; then
+    dchoice=$(osascript -e 'display dialog "Docker Desktop is not running, so reclaim cannot see how much of its images and build cache are reclaimable (this is often the single biggest item).
+
+Start Docker Desktop and rescan?" buttons {"Skip Docker", "Start Docker & rescan"} default button "Start Docker & rescan" with title "Disk Cleanup" with icon note giving up after 120' 2>/dev/null)
+    case "$dchoice" in
+      *"Start Docker & rescan"*)
+        open -a Docker 2>/dev/null
+        for _ in $(seq 1 60); do
+          docker info >/dev/null 2>&1 && break
+          sleep 2
+        done
+        if docker info >/dev/null 2>&1; then
+          RECLAIM_DOCKER_TRIED=1 exec "$0" --force
+        else
+          osascript -e 'display notification "Docker did not come up in time - continuing without it." with title "Disk Cleanup"' 2>/dev/null
+        fi
+        ;;
+    esac
+  fi
+
+  docker_short="not running"
+  [ "$docker_kb" -gt 0 ] && docker_short="$(human "$docker_kb")"
+  summary=$(cat <<SUM
+Free now: $(human "$free_now")   -   reclaimable: ~$(human "$est_kb")
+
+1. .next caches            $(human "$next_kb")  ($next_count projects)
+2. Installer DMGs          $(human "$dmg_kb")  ($dmg_count files)
+3. Docker unused images    $docker_short
+4. npm cache               $(human "$npm_kb")
+5. Claude vm_bundles       $(human "$claude_kb")$([ "$claude_running" = "1" ] && echo " (Claude running, skipped)")
+6. Dormant node_modules    $(human "$dorm_kb")  ($dorm_count projects, ${DORMANT_DAYS}d+ idle)
+7. Turbopack cache bloat   $(human "$turbo_kb")  ($turbo_count project(s))$([ "$turbo_blocked" -gt 0 ] && echo " + $(human "$turbo_blocked_kb") blocked by a running dev server")
+8. Chrome cache            $(human "$chrome_kb")$([ "$chrome_running" = "1" ] && echo " (quit Chrome first)")
+9. pnpm store              $(human "$pnpm_kb")
+10. Stray recordings       $(human "$media_kb")  ($media_count files - your own files, off by default)
+
+Reboot would free up to $(human "$reboot_kb") more.
+SUM
+)
+  [ "$skipped" -gt 0 ] && summary="$summary
+$(printf '\n%s project(s) protected (dev server / dirty git / recent edits).' "$skipped")"
+  summary="$summary
+
+Continue opens a picker - nothing is deleted until you select and confirm there."
+  plan_for_dialog=$(printf '%s' "$summary" | sed 's/"/\\"/g')
   while true; do
     choice=$(osascript -e "display dialog \"$plan_for_dialog\" buttons {\"Cancel\", \"Ask Claude\", \"Continue\"} default button \"Continue\" with title \"Disk Cleanup\" with icon note giving up after 300" 2>/dev/null)
     case "$choice" in
@@ -311,17 +492,35 @@ else
     l5="Claude vm_bundles        -  $(human "$claude_kb")   risk: low, redownloaded on demand"
   fi
   l6="Dormant node_modules     -  $(human "$dorm_kb")  ($dorm_count projects ${DORMANT_DAYS}d+ idle)   risk: low, opens per-project picker"
+  if [ "$turbo_count" -gt 0 ]; then
+    l7="Turbopack cache bloat    -  $(human "$turbo_kb")  ($turbo_count project(s))   risk: none, Next rebuilds it (one slow start)"
+  elif [ "$turbo_blocked" -gt 0 ]; then
+    l7="Turbopack cache bloat    -  $(human "$turbo_blocked_kb")   BLOCKED: stop that project's dev server, then rerun"
+  else
+    l7="Turbopack cache bloat    -  0 KB   nothing over $(human "$TURBO_MIN_KB")"
+  fi
+  if [ "$chrome_running" = "1" ]; then
+    l8="Chrome cache             -  $(human "$chrome_kb")   SKIPPED: quit Chrome first (logins/passwords are never touched)"
+  else
+    l8="Chrome cache             -  $(human "$chrome_kb")   risk: none, cache only - you stay signed in everywhere"
+  fi
+  l9="pnpm store               -  $(human "$pnpm_kb")   risk: none, existing node_modules are hardlinks and keep working"
+  l10="Stray recordings         -  $(human "$media_kb")  ($media_count files)   YOUR FILES, not cache - opens a per-file picker"
 
-  # Default-on: low/none risk items. Off by default: Claude vm_bundles (if running), dormant.
+  # Default-on: low/none risk items. Off by default: Claude vm_bundles (if
+  # running), dormant node_modules, Chrome (if running), and always recordings.
   default_items="\"$l1\", \"$l2\", \"$l3\", \"$l4\""
   [ "$claude_running" = "0" ] && [ "$claude_kb" -gt 0 ] && default_items="$default_items, \"$l5\""
+  [ "$turbo_count" -gt 0 ] && default_items="$default_items, \"$l7\""
+  [ "$chrome_running" = "0" ] && [ "$chrome_kb" -gt 0 ] && default_items="$default_items, \"$l8\""
+  [ "$pnpm_kb" -gt 0 ] && default_items="$default_items, \"$l9\""
 
-  all_items="\"$l1\", \"$l2\", \"$l3\", \"$l4\", \"$l5\", \"$l6\""
+  all_items="\"$l1\", \"$l2\", \"$l3\", \"$l4\", \"$l5\", \"$l6\", \"$l7\", \"$l8\", \"$l9\", \"$l10\""
 
   picked=$(osascript 2>/dev/null \
     -e "set theList to {$all_items}" \
     -e "set theDefaults to {$default_items}" \
-    -e 'set chosen to choose from list theList with prompt "Tick what to clean. Ticked-by-default items are the safe set." default items theDefaults with multiple selections allowed' \
+    -e 'set chosen to choose from list theList with prompt "Select what to clean - Cmd-click or Shift-click to pick more than one." default items theDefaults with multiple selections allowed' \
     -e 'if chosen is false then return "CANCEL"' \
     -e 'set text item delimiters of AppleScript to "||"' \
     -e 'return chosen as string')
@@ -360,7 +559,7 @@ else
 
       dorm_picked=$(osascript 2>/dev/null \
         -e "set theList to {$dorm_list}" \
-        -e 'set chosen to choose from list theList with prompt "Tick which dormant node_modules to delete. These projects had no edits for '"$DORMANT_DAYS"'+ days." with multiple selections allowed' \
+        -e 'set chosen to choose from list theList with prompt "Which dormant node_modules to delete? No edits for '"$DORMANT_DAYS"'+ days. Cmd-click for more than one." with multiple selections allowed' \
         -e 'if chosen is false then return "CANCEL"' \
         -e 'set text item delimiters of AppleScript to "||"' \
         -e 'return chosen as string')
@@ -384,7 +583,62 @@ else
     ;;
   esac
 
-  total_actions=$((do_next + do_dmg + do_docker + do_npm + do_claudevm + do_dorm))
+  case "$picked" in *"Turbopack cache bloat"*)
+    if [ "$turbo_count" -gt 0 ]; then
+      do_turbo=1
+    elif [ "$turbo_blocked" -gt 0 ]; then
+      osascript -e 'display notification "Turbopack caches skipped - a dev server is still running for those projects." with title "Disk Cleanup"' 2>/dev/null
+    fi
+    ;;
+  esac
+
+  case "$picked" in *"Chrome cache"*)
+    if [ "$chrome_running" = "1" ]; then
+      osascript -e 'display notification "Chrome is running - cache left alone. Quit Chrome and rerun." with title "Disk Cleanup"' 2>/dev/null
+    else
+      do_chrome=1
+    fi
+    ;;
+  esac
+
+  case "$picked" in *"pnpm store"*) [ "$pnpm_kb" -gt 0 ] && do_pnpm=1 ;; esac
+
+  case "$picked" in *"Stray recordings"*)
+    if [ "$media_count" -gt 0 ]; then
+      # Per-file picker. These are personal files, so nothing is pre-ticked.
+      media_list=""
+      while IFS=$'\t' read -r sz path; do
+        short=${path/#$HOME/\~}
+        lbl="$(human "$sz")  -  $short"
+        esc=${lbl//\"/\\\"}
+        media_list="$media_list\"$esc\", "
+      done < "$MEDIA_TMP"
+      media_list="${media_list%, }"
+
+      media_picked=$(osascript 2>/dev/null \
+        -e "set theList to {$media_list}" \
+        -e 'set chosen to choose from list theList with prompt "Which recordings to DELETE PERMANENTLY? Your own files, not caches - nothing preselected. Cmd-click for more than one." with multiple selections allowed' \
+        -e 'if chosen is false then return "CANCEL"' \
+        -e 'set text item delimiters of AppleScript to "||"' \
+        -e 'return chosen as string')
+
+      if [ "$media_picked" != "CANCEL" ] && [ -n "$media_picked" ]; then
+        media_selected_file="$STATE_DIR/.media-selected.$$"
+        : > "$media_selected_file"
+        printf '%s\n' "$media_picked" | awk -F'\\|\\|' '{for(i=1;i<=NF;i++)print $i}' \
+        | while IFS= read -r label; do
+            short_path=${label#*-  }
+            full_path="${short_path/#\~/$HOME}"
+            printf '%s\n' "$full_path" >> "$media_selected_file"
+          done
+        [ -s "$media_selected_file" ] && do_media=1
+      fi
+    fi
+    ;;
+  esac
+
+  total_actions=$((do_next + do_dmg + do_docker + do_npm + do_claudevm + do_dorm \
+                   + do_turbo + do_chrome + do_pnpm + do_media))
   if [ "$total_actions" -gt 0 ]; then
     action="clean"
   fi
@@ -416,8 +670,14 @@ if [ "$action" = "clean" ]; then
   fi
 
   if [ "$do_docker" = "1" ] && docker info >/dev/null 2>&1; then
+    # Log what actually went, not the pre-run estimate. Docker's "Reclaimable"
+    # column counts images that a stopped container still references, so it
+    # routinely overstates - measure real total size before and after instead.
+    dk_before=$(docker_total_kb)
     docker system prune -af >/dev/null 2>&1
-    removed_json="$removed_json{\"path\":\"docker:system-prune-af\",\"kb\":${docker_kb:-0}},"
+    dk_after=$(docker_total_kb)
+    dk_freed=$(( ${dk_before:-0} - ${dk_after:-0} )); [ "$dk_freed" -lt 0 ] && dk_freed=0
+    removed_json="$removed_json{\"path\":\"docker:system-prune-af\",\"kb\":${dk_freed},\"estimated_kb\":${docker_kb:-0}},"
   fi
 
   if [ "$do_npm" = "1" ] && [ -d "$NPM_CACHE" ]; then
@@ -442,12 +702,54 @@ if [ "$action" = "clean" ]; then
     rm -f "$dorm_selected_file"
   fi
 
+  # Turbopack: delete only the cache dir, keep the rest of .next. Re-check that
+  # no dev server appeared for that project since the scan.
+  if [ "$do_turbo" = "1" ] && [ -s "$TURBO_TMP" ]; then
+    while IFS=$'\t' read -r sz reason nextdir; do
+      [ -z "$nextdir" ] && continue
+      [ "$reason" = "running" ] && continue
+      [ "$(protected_reason "$(dirname "$nextdir")")" = "running" ] && continue
+      for p in "$nextdir/dev/cache/turbopack" "$nextdir/cache/turbopack"; do
+        [ -d "$p" ] || continue
+        kb=$(du -sk "$p" 2>/dev/null | awk '{print $1}')
+        rm -rf "$p"
+        removed_json="$removed_json{\"path\":\"$(json_escape "$p")\",\"kb\":${kb:-0}},"
+      done
+    done < "$TURBO_TMP"
+  fi
+
+  # Chrome: cache only, and only while Chrome is not running.
+  if [ "$do_chrome" = "1" ] && [ -d "$CHROME_CACHE" ] && ! pgrep -x "Google Chrome" >/dev/null 2>&1; then
+    kb=$(du -sk "$CHROME_CACHE" 2>/dev/null | awk '{print $1}')
+    rm -rf "$CHROME_CACHE"
+    removed_json="$removed_json{\"path\":\"$(json_escape "$CHROME_CACHE")\",\"kb\":${kb:-0}},"
+  fi
+
+  # pnpm: use the built-in prune so only unreferenced packages go.
+  if [ "$do_pnpm" = "1" ] && command -v pnpm >/dev/null 2>&1; then
+    kb_before=$(du -sk "$PNPM_STORE" 2>/dev/null | awk '{print $1}')
+    pnpm store prune >/dev/null 2>&1
+    kb_after=$(du -sk "$PNPM_STORE" 2>/dev/null | awk '{print $1}')
+    removed_json="$removed_json{\"path\":\"pnpm:store-prune\",\"kb\":$(( ${kb_before:-0} - ${kb_after:-0} ))},"
+  fi
+
+  if [ "$do_media" = "1" ] && [ -n "$media_selected_file" ] && [ -s "$media_selected_file" ]; then
+    while IFS= read -r f; do
+      [ -z "$f" ] || [ ! -f "$f" ] && continue
+      kb=$(du -sk "$f" 2>/dev/null | awk '{print $1}')
+      rm -f "$f"
+      removed_json="$removed_json{\"path\":\"$(json_escape "$f")\",\"kb\":${kb:-0}},"
+    done < "$media_selected_file"
+    rm -f "$media_selected_file"
+  fi
+
   removed_json="[${removed_json%,}]"
   after=$(df -k / | awk 'NR==2{print $4}')
   freed=$((after - before)); [ "$freed" -lt 0 ] && freed=0
-  printf '{"ts":"%s","action":"clean","freed_kb":%s,"cleaned":{"next":%s,"dmg":%s,"docker":%s,"npm":%s,"claudevm":%s,"dormant":%s},"next_dirs":%s,"dmgs":%s,"dormant_count":%s,"protected":{"running":%s,"dirty":%s,"recent":%s},"free_after_kb":%s,"removed":%s}\n' \
+  printf '{"ts":"%s","action":"clean","freed_kb":%s,"cleaned":{"next":%s,"dmg":%s,"docker":%s,"npm":%s,"claudevm":%s,"dormant":%s,"turbopack":%s,"chrome":%s,"pnpm":%s,"media":%s},"next_dirs":%s,"dmgs":%s,"dormant_count":%s,"turbo_count":%s,"turbo_blocked":%s,"protected":{"running":%s,"dirty":%s,"recent":%s},"free_after_kb":%s,"removed":%s}\n' \
     "$ts" "$freed" "$do_next" "$do_dmg" "$do_docker" "$do_npm" "$do_claudevm" "$do_dorm" \
-    "$next_count" "$dmg_count" "$dorm_count" \
+    "$do_turbo" "$do_chrome" "$do_pnpm" "$do_media" \
+    "$next_count" "$dmg_count" "$dorm_count" "$turbo_count" "$turbo_blocked" \
     "$prot_running" "$prot_dirty" "$prot_recent" "$after" "$removed_json" >> "$LOG"
   osascript -e "display notification \"Freed $(human "$freed") - $(human "$after") free now.\" with title \"Disk Cleanup\"" 2>/dev/null
 else
