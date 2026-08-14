@@ -24,8 +24,9 @@ case "$cmd" in
   clean)
     if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then exec "$SCRIPT" --yes; else exec "$SCRIPT" --force; fi
     ;;
-  scan) exec "$SCRIPT" --scan ;;
-  dry)  exec "$SCRIPT" --dry ;;
+  scan)   exec "$SCRIPT" --scan ;;
+  dry)    exec "$SCRIPT" --dry ;;
+  notify) exec "$SCRIPT" --notify ;;
 
   history)
     if [ "${1:-}" = "clear" ]; then
@@ -314,7 +315,7 @@ ${B}Active-work protection${R} always applies to .next and dormant node_modules:
 EOF
     ;;
 
-  version|-v|--version) echo "reclaim 1.5" ;;
+  version|-v|--version) echo "reclaim 1.6" ;;
 
   help|-h|--help|*)
     cat <<EOF
@@ -329,6 +330,8 @@ ${B}USAGE${R}   reclaim <command>
                    dormant node_modules requires the interactive picker
   ${C}scan${R}             notify how much is cleanable (deletes nothing)
   ${C}dry${R}              print what would be cleaned (no dialog, no delete)
+  ${C}notify${R}           quiet scheduler mode: 3-day gate, notification if
+                   1 GB+ is cleanable, deletes nothing
   ${C}history${R}          table of past runs and space freed
   ${C}history clear${R}    archive + reset the history log
   ${C}stats${R}            lifetime totals (runs, total reclaimed)
