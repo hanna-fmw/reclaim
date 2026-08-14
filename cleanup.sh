@@ -44,6 +44,9 @@
 #               Does NOT touch dormant node_modules in -y (needs approval)
 #   --scan      just notify how much is cleanable, delete nothing
 #   --dry       print the plan to stdout, delete nothing, no dialog
+#   --notify    scheduler mode without the dialog: obeys the 3-day gate,
+#               posts a notification if at least NOTIFY_MIN_KB (default 1 GB)
+#               is cleanable, deletes nothing
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
 set -u
@@ -66,6 +69,8 @@ TURBO_MIN_KB=${TURBO_MIN_KB:-$((2 * 1024 * 1024))}   # 2 GB
 # Stray recordings: only files at least this big and this old are listed.
 MEDIA_MIN_KB=${MEDIA_MIN_KB:-$((200 * 1024))}        # 200 MB
 MEDIA_AGE_DAYS=${MEDIA_AGE_DAYS:-30}
+# --notify stays quiet below this much reclaimable space.
+NOTIFY_MIN_KB=${NOTIFY_MIN_KB:-$((1024 * 1024))}     # 1 GB
 MEDIA_DIRS="$HOME/Desktop $HOME/Downloads $HOME/Documents"
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$STATE_DIR"
@@ -76,6 +81,7 @@ case "${1:-}" in
   --scan)    MODE="scan" ;;
   --dry)     MODE="dry" ;;
   --yes|-y)  MODE="yes" ;;
+  --notify)  MODE="notify" ;;
 esac
 # A human running it in a terminal always means "now".
 [ -t 0 ] && [ "$MODE" = "auto" ] && MODE="force"
@@ -83,7 +89,7 @@ esac
 now=$(date +%s)
 
 # --- 3-day gate: scheduler fires daily, we only proceed every Nth day ---
-if [ "$MODE" = "auto" ] && [ -f "$LAST_RUN" ]; then
+if { [ "$MODE" = "auto" ] || [ "$MODE" = "notify" ]; } && [ -f "$LAST_RUN" ]; then
   last=$(cat "$LAST_RUN" 2>/dev/null || echo 0)
   if [ $(( (now - last) / 86400 )) -lt "$INTERVAL_DAYS" ]; then
     exit 0
@@ -371,6 +377,17 @@ build_plan > "$PLAN_TMP"
 # --- scan: just report, never delete ---
 if [ "$MODE" = "scan" ]; then
   osascript -e "display notification \"~$(human "$est_kb") cleanable across 6 categories. Run cleanup to free it.\" with title \"Disk Cleanup\"" 2>/dev/null
+  exit 0
+fi
+
+# --- notify: quiet scheduler reminder, never delete ---
+if [ "$MODE" = "notify" ]; then
+  echo "$now" > "$LAST_RUN"
+  if [ "$est_kb" -ge "$NOTIFY_MIN_KB" ]; then
+    osascript -e "display notification \"~$(human "$est_kb") cleanable. Run reclaim in a terminal, or ask Claude.\" with title \"Disk Cleanup\"" 2>/dev/null
+    printf '{"ts":"%s","action":"notify","reclaimable_kb":%s}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$est_kb" >> "$LOG"
+  fi
   exit 0
 fi
 
