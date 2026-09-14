@@ -16,6 +16,10 @@ else
   B=; D=; G=; Y=; C=; R=
 fi
 
+# Every docker call times out, so a wedged daemon cannot hang the CLI.
+DOCKER_BIN=$(PATH="$PATH:/Applications/Docker.app/Contents/Resources/bin" command -v docker 2>/dev/null || echo docker)
+docker() { perl -e 'alarm shift; exec @ARGV' "${DOCKER_TIMEOUT:-20}" "$DOCKER_BIN" "$@"; }
+
 human() { awk -v k="$1" 'BEGIN{ if(k>=1048576)printf "%.1f GB",k/1048576; else if(k>=1024)printf "%.0f MB",k/1024; else printf "%d KB",k }'; }
 
 cmd="${1:-help}"; [ "$#" -gt 0 ] && shift
@@ -177,7 +181,18 @@ PY
 
   top)
     echo "${B}Biggest space users${R} ${D}(live scan, one level deep)${R}"
-    du -sk "$HOME/Documents"/* "$HOME/Library/Caches"/* "$HOME/Library/Containers"/* \
+    # Same roots cleanup.sh scans for projects (RECLAIM_ROOTS, else visible home folders).
+    roots=()
+    if [ -n "${RECLAIM_ROOTS:-}" ]; then
+      for r in $RECLAIM_ROOTS; do roots+=("$r"/*); done
+    else
+      for d in "$HOME"/*/; do
+        d=${d%/}
+        case "${d##*/}" in Library|Applications|Movies|Music|Pictures|Downloads|Public) continue ;; esac
+        roots+=("$d"/*)
+      done
+    fi
+    du -sk "${roots[@]}" "$HOME/Library/Caches"/* "$HOME/Library/Containers"/* \
            "$HOME/Library/Application Support"/* "$HOME/Library/pnpm" 2>/dev/null \
       | sort -rn | head -15 \
       | awk '{kb=$1; $1=""; sub(/^ /,""); if(kb>=1048576)s=sprintf("%.1f GB",kb/1048576); else s=sprintf("%.0f MB",kb/1024); printf "  %9s  %s\n", s, $0}'
@@ -198,7 +213,7 @@ PY
     if launchctl list 2>/dev/null | grep -q "$LABEL"; then ok "schedule loaded"; else wn "schedule not loaded - run: reclaim enable"; fi
     [ -w "$STATE_DIR" ] && ok "state dir writable" || bad "cannot write $STATE_DIR"
     if [ -f "$LAST_RUN" ]; then ok "last run $(date -r "$(cat "$LAST_RUN")" '+%Y-%m-%d %H:%M')"; else wn "never run yet"; fi
-    if docker info >/dev/null 2>&1; then ok "docker daemon reachable"; else wn "docker not running (docker step skipped)"; fi
+    if docker info >/dev/null 2>&1; then ok "docker daemon reachable"; else wn "docker not running or not answering (docker step skipped)"; fi
     ok "disk free $(human "$(df -k / | awk 'NR==2{print $4}')")"
     echo ""
     printf "  ${B}%d passed, %d warning(s), %d failed${R}\n" "$pass" "$warn" "$fail"
@@ -266,7 +281,8 @@ EOF
     cat <<EOF
 ${B}reclaim - what it will look at${R}  ${D}(10 categories, each opt-in in the dialog)${R}
 
-  ${C}1. .next caches${R}             Next.js build caches in ~/Documents projects
+  ${C}1. .next caches${R}             Next.js build caches in projects under your home
+                   folders (or RECLAIM_ROOTS)
      ${D}risk: none    rebuild on next \`pnpm dev\` / \`next build\`${R}
 
   ${C}2. Installer DMGs${R}           Old Screaming Frog auto-update installers
@@ -315,7 +331,7 @@ ${B}Active-work protection${R} always applies to .next and dormant node_modules:
 EOF
     ;;
 
-  version|-v|--version) echo "reclaim 1.6" ;;
+  version|-v|--version) echo "reclaim 1.7" ;;
 
   help|-h|--help|*)
     cat <<EOF

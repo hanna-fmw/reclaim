@@ -21,7 +21,7 @@ Why safe: pure download cache, rebuilds on next `npm install`.
 Active-work check: arguably none needed — even active projects don't need a warm cache.
 
 ### 4. Dormant `node_modules` (~5-10 GB possible)
-For each project under `~/Documents/`:
+For each project under the scan roots:
 - Skip if it satisfies the existing active-work checks (dev server running, dirty git, files edited within PROTECT_HOURS).
 - Skip if any file in the project edited within the last N days (configurable, suggest 30).
 - If both pass: `rm -rf <project>/node_modules`. Reinstalled on demand.
@@ -61,7 +61,7 @@ Still open, in rough priority order:
 1. Item 6 (Google DriveFS recommendation).
 2. Remaining item-5 allowlist entries: `ms-playwright`, `Homebrew`, `pip`.
 3. **Docker containers.** `prune -af` cannot touch an image while any container references it, so a machine running local dev stacks shows ~0 prunable despite many GB of images (observed 2026-08-10: 14 images, all held by 14 running containers, 11.5 GB). Surfacing *stopped* containers as a category would unlock that, but it deletes container state rather than a cache — it needs its own safety reasoning and explicit approval before anyone builds it. Do not fold it into the existing Docker category.
-4. **Docker's disk image never shrinks, so pruning frees nothing on the Mac.** Everything Docker holds lives inside one file, `~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw`. Deleting images frees space *inside* that file; the file itself stays the size it grew to. Observed 2026-09-09: 24 GB, holding several unused duplicates of the same Supabase images across three local stacks. So reclaim's Docker category can report a win that the disk never sees. The fix is to compact the disk image after a prune — Docker Desktop does it under Settings → Resources → Advanced, and `docker run --privileged --rm docker/desktop-reclaim-space` is the scriptable equivalent — but it needs its own safety reasoning first: it takes minutes, wants the daemon idle, and README:94 already notes compaction is unreliable. **Until it is built, reclaim should at least report the gap** rather than imply the space came back.
+4. **Docker's disk image may give space back late, so verify rather than assume.** Everything Docker holds lives inside one sparse file, `~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw`. Observed 2026-09-09: 24 GB, holding several unused duplicates of the same Supabase images across three local stacks. Observed 2026-09-14: after a 2.8 GB prune on a freshly restarted Docker, free disk space went from 15 to 19 GB, so the file did shrink — but on other setups it can lag or not happen. reclaim should measure disk free before and after rather than trust Docker's own number. The fix is to compact the disk image after a prune — Docker Desktop does it under Settings → Resources → Advanced, and `docker run --privileged --rm docker/desktop-reclaim-space` is the scriptable equivalent — but it needs its own safety reasoning first: it takes minutes, wants the daemon idle, and README:94 already notes compaction is unreliable. **Until it is built, reclaim should at least report the gap** rather than imply the space came back.
 
 ---
 

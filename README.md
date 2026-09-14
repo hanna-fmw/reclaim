@@ -266,7 +266,8 @@ Edit the constants at the top of `cleanup.sh`:
 - `INTERVAL_DAYS` - days between scheduled actions (default 3)
 - `PROTECT_HOURS` - "recently edited" protection window (default 24)
 - `DORMANT_DAYS` - idle window before `node_modules` counts as dormant (default 30)
-- `DOCS` - root scanned for `.next` caches (default `~/Documents`)
+- `RECLAIM_ROOTS` (env) - space-separated folders scanned for projects (`.next` caches, dormant `node_modules`). Default: every visible folder in your home except Library, Applications, Movies, Music, Pictures, Downloads and Public
+- `DOCKER_TIMEOUT` (env) - seconds any Docker call may take before reclaim gives up on it (default 20), so a stuck Docker never hangs a scan
 - `DMG_DIR` - directory swept for installer `.dmg` files
 - `TURBO_MIN_KB` - size a Turbopack cache must exceed to be offered (default 2 GB)
 - `MEDIA_MIN_KB` / `MEDIA_AGE_DAYS` - size and age thresholds for stray

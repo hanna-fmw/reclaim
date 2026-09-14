@@ -2,7 +2,8 @@
 # Disk Cleanup - scan, ask, reclaim safe space, log. macOS launchd-friendly.
 #
 # Categories handled (each can be picked individually in the dialog):
-#   1. .next caches             - Next.js build caches in ~/Documents projects
+#   1. .next caches             - Next.js build caches in projects under the
+#                                 scan roots (RECLAIM_ROOTS, default: home folders)
 #   2. Installer DMGs           - leftover Screaming Frog auto-update DMGs
 #   3. Docker unused images     - full prune (not just dangling) + build cache
 #   4. npm cache                - ~/.npm/_cacache, rebuilds on next install
@@ -54,7 +55,38 @@ set -u
 STATE_DIR="$HOME/.disk-cleanup"
 LOG="$STATE_DIR/history.jsonl"
 LAST_RUN="$STATE_DIR/last-run"
-DOCS="$HOME/Documents"
+# Where projects are looked for (.next caches, dormant node_modules).
+# RECLAIM_ROOTS (space-separated) overrides; otherwise every visible folder in
+# $HOME except the macOS media/system ones, so moving projects never hides them.
+RECLAIM_ROOTS=${RECLAIM_ROOTS:-}
+scan_roots() {
+  if [ -n "$RECLAIM_ROOTS" ]; then
+    printf '%s\n' $RECLAIM_ROOTS
+    return
+  fi
+  for d in "$HOME"/*/; do
+    d=${d%/}
+    case "${d##*/}" in
+      Library|Applications|Movies|Music|Pictures|Downloads|Public) continue ;;
+    esac
+    printf '%s\n' "$d"
+  done
+}
+# project_dirs <name>: every directory called <name> under the scan roots.
+# Never descends into .git, node_modules or .next, so it stays fast.
+project_dirs() {
+  scan_roots | while IFS= read -r r; do
+    [ -d "$r" ] || continue
+    find "$r" -maxdepth 8 -type d \
+      \( -name .git -o -name node_modules -o -name .next \) -prune -name "$1" -print 2>/dev/null
+  done
+}
+# Every docker call times out: a wedged daemon (common on a full disk) would
+# otherwise hang the whole scan.
+DOCKER_BIN=$(command -v docker 2>/dev/null || echo docker)
+DOCKER_TIMEOUT=${DOCKER_TIMEOUT:-20}
+docker() { perl -e 'alarm shift; exec @ARGV' "$DOCKER_TIMEOUT" "$DOCKER_BIN" "$@"; }
+DOCKER_RAW="$HOME/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw"
 DMG_DIR="$HOME/.ScreamingFrogSEOSpider/AppUpdater"
 NPM_CACHE="$HOME/.npm/_cacache"
 CLAUDE_VM="$HOME/Library/Application Support/Claude/vm_bundles"
@@ -184,7 +216,7 @@ while IFS= read -r d; do
   sz=$(du -sk "$d" 2>/dev/null | awk '{print $1}')
   next_kb=$((next_kb + ${sz:-0})); next_count=$((next_count + 1))
 done <<EOF
-$(find "$DOCS" -type d -name .next -prune 2>/dev/null)
+$(project_dirs .next)
 EOF
 
 # --- collect installer DMGs ---
@@ -217,6 +249,12 @@ docker_total_kb() {
 
 # --- Docker: estimate size of unused (reclaimable) images + build cache ---
 docker_note="not running"
+# Docker.raw is sparse: du gives what it really occupies on disk.
+docker_disk_kb=0
+[ -f "$DOCKER_RAW" ] && docker_disk_kb=$(du -sk "$DOCKER_RAW" 2>/dev/null | awk '{print $1}')
+if [ "${docker_disk_kb:-0}" -gt 0 ]; then
+  docker_note="not answering - Docker's disk holds $(human "$docker_disk_kb"); restart Docker Desktop, then run again"
+fi
 docker_kb=0
 docker_held=0
 if docker info >/dev/null 2>&1; then
@@ -266,7 +304,7 @@ while IFS= read -r nm; do
   printf '%s\t%s\n' "$sz" "$nm" >> "$DORM_TMP"
   dorm_kb=$((dorm_kb + sz)); dorm_count=$((dorm_count + 1))
 done <<EOF
-$(find "$DOCS" -type d -name node_modules -prune 2>/dev/null)
+$(project_dirs node_modules)
 EOF
 # sort biggest first for the per-project picker
 if [ -s "$DORM_TMP" ]; then
@@ -600,7 +638,7 @@ Start it now and prune?" buttons {"Skip Docker", "Start Docker & prune"} default
       dorm_list=""
       while IFS=$'\t' read -r sz path; do
         proj=${path%/node_modules}
-        # shorten to ~/Documents/...
+        # shorten $HOME to ~
         short=${proj/#$HOME/~}
         lbl="$(human "$sz")  -  $short"
         esc=${lbl//\"/\\\"}
@@ -725,7 +763,7 @@ if [ "$action" = "clean" ]; then
     # column counts images that a stopped container still references, so it
     # routinely overstates - measure real total size before and after instead.
     dk_before=$(docker_total_kb)
-    docker system prune -af >/dev/null 2>&1
+    DOCKER_TIMEOUT=900 docker system prune -af >/dev/null 2>&1   # a prune can take minutes
     dk_after=$(docker_total_kb)
     dk_freed=$(( ${dk_before:-0} - ${dk_after:-0} )); [ "$dk_freed" -lt 0 ] && dk_freed=0
     removed_json="$removed_json{\"path\":\"docker:system-prune-af\",\"kb\":${dk_freed},\"estimated_kb\":${docker_kb:-0}},"
