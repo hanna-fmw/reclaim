@@ -85,7 +85,28 @@ project_dirs() {
 # otherwise hang the whole scan.
 DOCKER_BIN=$(command -v docker 2>/dev/null || echo docker)
 DOCKER_TIMEOUT=${DOCKER_TIMEOUT:-20}
-docker() { perl -e 'alarm shift; exec @ARGV' "$DOCKER_TIMEOUT" "$DOCKER_BIN" "$@"; }
+# The docker CLI (Go) ignores SIGALRM, so a plain `alarm; exec` never fires:
+# run it as a child and SIGKILL it when the timer runs out. Exit 124 = timed out.
+docker() {
+  perl -e '$t=shift; $p=fork; if(!$p){exec @ARGV; exit 127}
+           $SIG{ALRM}=sub{kill "KILL",$p; waitpid($p,0); exit 124};
+           alarm $t; waitpid($p,0); exit($?>>8)' "$DOCKER_TIMEOUT" "$DOCKER_BIN" "$@"
+}
+# Start Docker Desktop - or restart it if it is running but not answering, since
+# `open -a` does nothing for a stuck app. Returns 0 once the daemon answers.
+start_docker() {
+  if pgrep -f com.docker.backend >/dev/null 2>&1; then
+    osascript -e 'quit app "Docker"' 2>/dev/null
+    for _ in $(seq 1 30); do pgrep -f com.docker.backend >/dev/null 2>&1 || break; sleep 2; done
+    pkill -9 -f com.docker 2>/dev/null
+  fi
+  open -a Docker 2>/dev/null
+  for _ in $(seq 1 60); do
+    DOCKER_TIMEOUT=3 docker info >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
 DOCKER_RAW="$HOME/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw"
 DMG_DIR="$HOME/.ScreamingFrogSEOSpider/AppUpdater"
 NPM_CACHE="$HOME/.npm/_cacache"
@@ -479,17 +500,12 @@ else
   # Docker holds its whole VM in one big file, so an unreachable daemon means we
   # cannot see (or reclaim) any of it. Offer to start it and rescan, once.
   if ! docker info >/dev/null 2>&1 && [ "${RECLAIM_DOCKER_TRIED:-0}" = "0" ]; then
-    dchoice=$(osascript -e 'display dialog "Docker Desktop is not running, so reclaim cannot see how much of its images and build cache are reclaimable (this is often the single biggest item).
+    dchoice=$(osascript -e 'display dialog "Docker Desktop is not running (or is stuck), so reclaim cannot see how much of its images and build cache are reclaimable (this is often the single biggest item).
 
 Start Docker Desktop and rescan?" buttons {"Skip Docker", "Start Docker & rescan"} default button "Start Docker & rescan" with title "Disk Cleanup" with icon note giving up after 120' 2>/dev/null)
     case "$dchoice" in
       *"Start Docker & rescan"*)
-        open -a Docker 2>/dev/null
-        for _ in $(seq 1 60); do
-          docker info >/dev/null 2>&1 && break
-          sleep 2
-        done
-        if docker info >/dev/null 2>&1; then
+        if start_docker; then
           RECLAIM_DOCKER_TRIED=1 exec "$0" --force
         else
           osascript -e 'display notification "Docker did not come up in time - continuing without it." with title "Disk Cleanup"' 2>/dev/null
@@ -600,17 +616,12 @@ Continue opens a picker - nothing is deleted until you select and confirm there.
       do_docker=1
     else
       # Picked it, but the daemon is down - say so instead of silently skipping.
-      dchoice=$(osascript -e 'display dialog "You picked Docker, but Docker Desktop is not running - reclaim cannot prune anything while the daemon is down.
+      dchoice=$(osascript -e 'display dialog "You picked Docker, but Docker Desktop is not running or is stuck - reclaim cannot prune anything while the daemon is down.
 
 Start it now and prune?" buttons {"Skip Docker", "Start Docker & prune"} default button "Start Docker & prune" with title "Disk Cleanup" with icon caution giving up after 120' 2>/dev/null)
       case "$dchoice" in
         *"Start Docker & prune"*)
-          open -a Docker 2>/dev/null
-          for _ in $(seq 1 60); do
-            docker info >/dev/null 2>&1 && break
-            sleep 2
-          done
-          if docker info >/dev/null 2>&1; then
+          if start_docker; then
             do_docker=1
           else
             osascript -e 'display notification "Docker did not come up in time - skipped." with title "Disk Cleanup"' 2>/dev/null

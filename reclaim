@@ -18,7 +18,12 @@ fi
 
 # Every docker call times out, so a wedged daemon cannot hang the CLI.
 DOCKER_BIN=$(PATH="$PATH:/Applications/Docker.app/Contents/Resources/bin" command -v docker 2>/dev/null || echo docker)
-docker() { perl -e 'alarm shift; exec @ARGV' "${DOCKER_TIMEOUT:-20}" "$DOCKER_BIN" "$@"; }
+# Child + SIGKILL, because the docker CLI ignores SIGALRM (see cleanup.sh).
+docker() {
+  perl -e '$t=shift; $p=fork; if(!$p){exec @ARGV; exit 127}
+           $SIG{ALRM}=sub{kill "KILL",$p; waitpid($p,0); exit 124};
+           alarm $t; waitpid($p,0); exit($?>>8)' "${DOCKER_TIMEOUT:-20}" "$DOCKER_BIN" "$@"
+}
 
 human() { awk -v k="$1" 'BEGIN{ if(k>=1048576)printf "%.1f GB",k/1048576; else if(k>=1024)printf "%.0f MB",k/1024; else printf "%d KB",k }'; }
 
@@ -331,7 +336,7 @@ ${B}Active-work protection${R} always applies to .next and dormant node_modules:
 EOF
     ;;
 
-  version|-v|--version) echo "reclaim 1.7" ;;
+  version|-v|--version) echo "reclaim 1.8" ;;
 
   help|-h|--help|*)
     cat <<EOF
