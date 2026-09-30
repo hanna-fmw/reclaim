@@ -184,6 +184,59 @@ print(f"Forecast:          ~{h(rate*3)} reclaimable per 3-day cycle")
 PY
     ;;
 
+  stacks)
+    # Which container stacks are running right now, and which project folder each belongs to.
+    # Reads only container names, compose labels and status - never the per-container
+    # detail view, which would print environment variables into the terminal.
+    if ! docker info >/dev/null 2>&1; then
+      echo "${Y}Docker is not running - nothing is using disk or memory right now.${R}"; exit 0
+    fi
+    running=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$running" = "0" ]; then
+      echo "${G}No containers running.${R}  ${D}Safe to run: docker image prune -a -f${R}"; exit 0
+    fi
+    echo "${B}Running stacks${R} ${D}($running container(s))${R}"
+    echo ""
+
+    # Look up supabase project id -> project folder from every supabase/config.toml on disk.
+    tmpmap=$(mktemp)
+    if [ -n "${RECLAIM_ROOTS:-}" ]; then searchroots="$RECLAIM_ROOTS"; else searchroots="$HOME"; fi
+    # shellcheck disable=SC2086
+    find $searchroots -maxdepth 6 -name config.toml -path '*/supabase/*' \
+         -not -path '*/node_modules/*' 2>/dev/null | while read -r cfg; do
+      pid=$(awk -F'"' '/^[[:space:]]*project_id[[:space:]]*=/{print $2; exit}' "$cfg" 2>/dev/null)
+      [ -n "$pid" ] && printf '%s\t%s\n' "$pid" "$(dirname "$(dirname "$cfg")")" >> "$tmpmap"
+    done
+
+    # Group the running containers into stacks: compose project label first,
+    # else the trailing project id in a supabase_<service>_<project> name.
+    docker ps --format '{{.Names}}'$'\t''{{.Label "com.docker.compose.project"}}'$'\t''{{.Status}}' 2>/dev/null \
+      | awk -F'\t' '{
+          key = $2
+          if (key == "") {
+            if ($1 ~ /^supabase_/) { key = $1; sub(/^supabase_[^_]+_/, "", key) }
+            else key = "(other)"
+          }
+          count[key]++
+          if (!(key in status)) status[key] = $3
+        }
+        END { for (k in count) printf "%s\t%d\t%s\n", k, count[k], status[k] }' \
+      | sort | while IFS="$(printf '\t')" read -r key n st; do
+          dir=$(awk -F'\t' -v k="$key" '$1==k{print $2; exit}' "$tmpmap" 2>/dev/null)
+          printf "  ${B}%-24s${R} %2d container(s)  ${D}%s${R}\n" "$key" "$n" "$st"
+          if [ -n "$dir" ]; then
+            printf "      ${D}folder:${R} %s\n" "$dir"
+            printf "      ${D}stop:${R}   cd %s && supabase stop\n" "$dir"
+          else
+            printf "      ${D}stop:${R}   docker compose -p %s down   ${D}(project folder not found)${R}\n" "$key"
+          fi
+          echo ""
+        done
+    rm -f "$tmpmap"
+    echo "${D}Stop what you are not using, then: docker image prune -a -f${R}"
+    echo "${D}Volumes - your local database data - are never removed by that command.${R}"
+    ;;
+
   top)
     echo "${B}Biggest space users${R} ${D}(live scan, one level deep)${R}"
     # Same roots cleanup.sh scans for projects (RECLAIM_ROOTS, else visible home folders).
