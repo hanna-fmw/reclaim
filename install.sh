@@ -1,6 +1,8 @@
 #!/bin/bash
-# Deploy reclaim from this project folder to the runtime location, put the CLI on
-# PATH, and load the launchd schedule. Re-run any time after editing the source.
+# Link reclaim from this project folder into the runtime location, put the CLI on PATH,
+# and load the launchd schedule. The runtime files are links, so this folder is the only
+# copy. `./install.sh --no-schedule` skips launchd, for a Mac where something else
+# schedules the daily run.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
@@ -10,9 +12,9 @@ PLIST="$HOME/Library/LaunchAgents/$PLIST_NAME"
 LABEL="dev.reclaim"
 
 mkdir -p "$DEST"
-cp "$SRC/cleanup.sh" "$DEST/cleanup.sh"
-cp "$SRC/reclaim"    "$DEST/reclaim"
-chmod +x "$DEST/cleanup.sh" "$DEST/reclaim"
+chmod +x "$SRC/cleanup.sh" "$SRC/reclaim"
+ln -sfn "$SRC/cleanup.sh" "$DEST/cleanup.sh"
+ln -sfn "$SRC/reclaim"    "$DEST/reclaim"
 
 # Put the CLI on PATH (prefer Homebrew bin, fall back to ~/.local/bin).
 if [ -d /opt/homebrew/bin ] && [ -w /opt/homebrew/bin ]; then
@@ -22,6 +24,10 @@ else
   mkdir -p "$HOME/.local/bin"
   ln -sf "$DEST/reclaim" "$HOME/.local/bin/reclaim"
   echo "Linked: ~/.local/bin/reclaim (ensure ~/.local/bin is on your PATH)"
+fi
+
+if [ "${1:-}" = "--no-schedule" ]; then
+  echo "Installed, without a launchd schedule."; exit 0
 fi
 
 # Load the launchd schedule (substitute __HOME__ placeholders at install time so

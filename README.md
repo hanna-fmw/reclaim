@@ -123,15 +123,15 @@ cd reclaim
 ./install.sh
 ```
 
-This deploys the scripts to `~/.disk-cleanup/`, symlinks the `reclaim` CLI onto
-your PATH, and loads the launchd schedule. To remove everything:
+This links the scripts into `~/.disk-cleanup/` (links, so this folder stays the only
+copy), symlinks the `reclaim` CLI onto your PATH, and loads the launchd schedule
+(`./install.sh --no-schedule` to skip it). To remove everything:
 
 ```sh
 ./uninstall.sh
 ```
 
-The cloned folder is the **source of truth**. Edit here, then re-run
-`./install.sh` to redeploy. Runtime state (`history.jsonl`, `last-run`) lives in
+The cloned folder is the **source of truth**; edits take effect at once. Runtime state (`history.jsonl`, `last-run`) lives in
 `~/.disk-cleanup/` and is not part of the repo.
 
 ---
@@ -242,7 +242,7 @@ reclaim/
   cleanup.sh                    core engine (scan, protect, dialog, clean, log)
   reclaim                       CLI front-end
   dev.reclaim.plist  launchd schedule (daily 08:45)
-  install.sh                    deploy to ~/.disk-cleanup + symlink + load launchd
+  install.sh                    link into ~/.disk-cleanup + symlink + load launchd
   uninstall.sh                  unload + remove symlink
   README.md
   LICENSE
