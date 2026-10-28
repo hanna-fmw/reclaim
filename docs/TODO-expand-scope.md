@@ -1,3 +1,6 @@
+<!-- todo: moved to docs/todo.md on 2026-10-28. History only: never edit this file. -->
+> Moved: the open items are in [docs/todo.md](todo.md) since 2026-10-28 (`todo show`).
+
 # TODO: Expand reclaim's cleanup scope
 
 reclaim currently only handles a narrow set of safe targets (`.next` caches, `.dmg` installers, Docker dangling images + build cache). On 2026-06-21 a manual disk audit found ~40 GB of additional safe-to-reclaim space that reclaim doesn't look at. Most of it could be added without losing the active-work-awareness guarantee.
